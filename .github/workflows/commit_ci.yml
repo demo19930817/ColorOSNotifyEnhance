@@ -1,6 +1,8 @@
 name: Automatic Build on Commit
 
 on:
+  push:
+    branches: [ master ]
   workflow_dispatch:
 
 permissions:

@@ -117,6 +117,12 @@ internal class NotificationPanelHooks(
      * entry point that covers every one of those surfaces at once, and it deliberately does not
      * yield to the host avatar: the composition keeps its own contact photo, only the small
      * app-icon badge changes.
+     *
+     * The helper is a suspend function on ColorOS 15+, i.e. erasing to `(sbn, continuation) →
+     * Object`. Returning the Drawable directly instead of proceeding is what makes it work there:
+     * the caller's continuation either receives it right away or reads it as the suspension
+     * result, while a host that does suspend internally would leak nothing because its own
+     * continuation is simply dropped.
      */
     private fun installPackageIconResolverHooks() {
         val resolver = members.packageIconResolver ?: return
@@ -129,14 +135,14 @@ internal class NotificationPanelHooks(
             if (!snapshot.resolver.panelThemeIconsEnabled()) return@install chain.proceed()
             val sbn = chain.args.firstOrNull { it is StatusBarNotification } as? StatusBarNotification
                 ?: return@install chain.proceed()
-            val context = systemUiContext() ?: return@install chain.proceed()
+            val context = resolverContext(resolver, chain.thisObject) ?: return@install chain.proceed()
             val packageName = sbn.packageName
             val replacement = try {
                 snapshot.resolver.resolvePanelThemeDrawable(context, sbn)
             } catch (throwable: Throwable) {
                 diagnostics.runtimeFailure(
                     scope = "panel:package_icon_resolver",
-                    message = "角标诊断：宿主应用图标读取失败，保留 ColorOS 原图标",
+                    message = "角标诊断：$packageName 宿主应用图标读取失败，保留 ColorOS 原图标",
                     cause = throwable,
                     revision = snapshot.revision,
                 )
@@ -152,15 +158,34 @@ internal class NotificationPanelHooks(
                 )
                 return@install chain.proceed()
             }
+            val suspendSignature =
+                resolver.getPackageIconForNotification.returnType == java.lang.Object::class.java
             diagnostics.report(
                 level = DiagnosticLevel.Info,
                 event = DiagnosticEvent.PackageIconResolved,
-                message = "角标诊断：$packageName 已替换为主题图标",
+                message = "角标诊断：$packageName 已替换为主题图标" +
+                    "（返回值=${replacement.javaClass.simpleName}，suspend=$suspendSignature）",
                 attributes = mapOf("package" to packageName),
                 occurrence = OccurrencePolicy.Once("package_icon_replaced:$packageName"),
             )
             replacement
         }
+    }
+
+    /**
+     * The resolver owns the SystemUI context, so asking the hooked instance is both cheaper and
+     * safer than poking at ActivityThread from a hook running before the host finished booting.
+     */
+    private fun resolverContext(
+        resolver: PackageIconResolverMembers,
+        host: Any?,
+    ): Context? {
+        if (host != null) {
+            runCatching { resolver.getContext?.invoke(host) as? Context }
+                .getOrNull()
+                ?.let { return it }
+        }
+        return systemUiContext()
     }
 
     private fun systemUiContext(): Context? = try {

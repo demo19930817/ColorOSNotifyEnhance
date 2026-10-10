@@ -61,6 +61,7 @@ internal data class PanelMembers(
 
 internal data class PackageIconResolverMembers(
     val getPackageIconForNotification: Method,
+    val getContext: Method?,
 )
 
 internal data class RefreshMembers(
@@ -525,19 +526,18 @@ internal object SystemUiMembers {
             )
             return null
         }
-        val method = resolverClass.declaredMethods
-            .filter {
-                it.name == PACKAGE_ICON_METHOD &&
-                    Drawable::class.java.isAssignableFrom(it.returnType)
+        // On ColorOS 15/16 this helper is a Kotlin suspend function, so its erased signature is
+        // `getPackageIconForNotification(StatusBarNotification, Continuation): Object` — filtering by
+        // a Drawable return type silently drops it and the badge keeps the stock icon. Any return
+        // type is accepted; the hook hands the Drawable back through the suspension result.
+        val candidates = resolverClass.declaredMethods.filter { it.name == PACKAGE_ICON_METHOD }
+        val method = candidates
+            .firstOrNull {
+                it.parameterTypes.any { parameter ->
+                    parameter == StatusBarNotification::class.java
+                }
             }
-            .let { matches ->
-                matches.firstOrNull {
-                    it.parameterTypes.any { parameter ->
-                        parameter == StatusBarNotification::class.java
-                    }
-                } ?: matches.firstOrNull()
-            }
-            ?.also { it.isAccessible = true }
+            ?: candidates.firstOrNull()
         if (method == null) {
             diagnostics.memberMissing(
                 scope = "systemui:package_icon_resolver:method",
@@ -545,7 +545,13 @@ internal object SystemUiMembers {
             )
             return null
         }
-        return PackageIconResolverMembers(getPackageIconForNotification = method)
+        method.isAccessible = true
+        val contextGetter = Reflection.findAnyMethod(resolverClass, "getContext", Context::class.java)
+            ?.also { it.isAccessible = true }
+        return PackageIconResolverMembers(
+            getPackageIconForNotification = method,
+            getContext = contextGetter,
+        )
     }
 
     private fun findClassBySimpleName(classLoader: ClassLoader, simpleName: String): Class<*>? {

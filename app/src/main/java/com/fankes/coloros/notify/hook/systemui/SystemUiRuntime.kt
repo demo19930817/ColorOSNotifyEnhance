@@ -9,6 +9,7 @@ import com.fankes.coloros.notify.hook.installationFailure
 import com.fankes.coloros.notify.hook.memberMissing
 import com.fankes.coloros.notify.hook.runtimeFailure
 import io.github.libxposed.api.XposedInterface
+import org.lsposed.hiddenapibypass.HiddenApiBypass
 
 internal class SystemUiRuntime(
     private val xposed: XposedInterface,
@@ -17,6 +18,15 @@ internal class SystemUiRuntime(
     private val processName: String,
 ) {
     fun install(classLoader: ClassLoader) {
+        // The host class that composes the notification's app icon moves between ColorOS releases,
+        // so it is located by walking the loaded dex names — that needs internals Android hides.
+        runCatching {
+            HiddenApiBypass.addHiddenApiExemptions(
+                "Ldalvik/system/BaseDexClassLoader;",
+                "Ldalvik/system/DexPathList;",
+                "Ldalvik/system/DexFile;",
+            )
+        }
         val iconConfiguration = OplusIconConfigurationReader(diagnostics)
         val themeIcons = ThemeIconProvider(diagnostics, iconConfiguration)
         val configuration = SystemUiConfiguration(
@@ -46,15 +56,13 @@ internal class SystemUiRuntime(
         }
 
         installFeature("use_app_icon") {
+            // Always false: when two conversations post at once ColorOS replaces the small icon of
+            // the first row with the raw app icon, which hides the contact avatar the module wants
+            // to keep. Letting the notification keep its own small icon keeps the avatar visible.
+            // The status bar colourability path still honours `shouldKeepHostAppIconBehavior()`.
             val utilityPredicate = SystemUiMembers.resolveUseAppIcon(classLoader)
             utilityPredicate?.let { method ->
-                hooks.install(method, "systemui.useAppIconForSmallIcon") { chain ->
-                    if (configuration.snapshot.resolver.shouldKeepHostAppIconBehavior()) {
-                        chain.proceed()
-                    } else {
-                        false
-                    }
-                }
+                hooks.install(method, "systemui.useAppIconForSmallIcon") { _ -> false }
             } ?: diagnostics.memberMissing(
                 scope = "systemui:use_app_icon",
                 message = "未找到 useAppIconForSmallIcon(Notification): boolean，跳过 ColorOS 应用图标策略",

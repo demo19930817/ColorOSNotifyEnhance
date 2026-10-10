@@ -71,7 +71,6 @@ class HomeActivity : ComponentActivity() {
                     onSyncRules = ::syncRules,
                     onRestartSystemUi = ::performRestartSystemUi,
                     onRulesEnabledChange = ::setRulesEnabled,
-                    onIconSourceModeChange = ::setIconSourceMode,
                     onPanelIconReplacementEnabledChange = ::setPanelIconReplacementEnabled,
                     onLockScreenCapsuleIconReplacementEnabledChange =
                         ::setLockScreenCapsuleIconReplacementEnabled,
@@ -143,11 +142,6 @@ class HomeActivity : ComponentActivity() {
     private fun setRulesEnabled(enabled: Boolean, onShowMessage: (String) -> Unit) {
         val service = requireFrameworkService(onShowMessage) ?: return
         updateConfig(service, onShowMessage) { RuleStore.setRulesEnabled(enabled) }
-    }
-
-    private fun setIconSourceMode(mode: RuleStore.IconSourceMode, onShowMessage: (String) -> Unit) {
-        val service = requireFrameworkService(onShowMessage) ?: return
-        updateConfig(service, onShowMessage) { RuleStore.setIconSourceMode(mode) }
     }
 
     private fun setPanelIconReplacementEnabled(enabled: Boolean, onShowMessage: (String) -> Unit) {

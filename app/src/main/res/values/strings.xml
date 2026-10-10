@@ -102,11 +102,6 @@
     <string name="rules_title">应用规则</string>
     <string name="rules_search_hint">搜索应用或包名</string>
     <string name="label_icon_enhancement_enabled">启用优化</string>
-    <string name="label_icon_source_mode">图标来源</string>
-    <string name="label_icon_source_rule_library">规则图标</string>
-    <string name="label_icon_source_rule_library_summary">使用模块规则库图标，保留规则列表的细粒度控制</string>
-    <string name="label_icon_source_desktop_theme">桌面主题</string>
-    <string name="label_icon_source_desktop_theme_summary">跟随桌面当前主题或自定义图标，不混用规则库</string>
     <string name="label_panel_icon_replacement_enabled">通知中心图标</string>
     <string name="label_host_avatar_priority">显示个人头像</string>
     <string name="label_lock_screen_capsule_icon_replacement_enabled">锁屏岛图标优化</string>

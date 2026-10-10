@@ -21,6 +21,7 @@ internal enum class DiagnosticEvent(val id: String) {
     HookRuntimeFailed("hook.runtime_failed"),
     IconRenderClamped("icon.render_clamped"),
     HostAvatarYield("icon.host_avatar_yield"),
+    PackageIconResolved("icon.package_icon_resolved"),
     ConfigLoaded("config.loaded"),
     ConfigLoadFailed("config.load_failed"),
     ConfigPublished("config.published"),

@@ -12,6 +12,7 @@ import com.fankes.coloros.notify.hook.memberMissing
 import com.fankes.coloros.notify.hook.reflect.Reflection
 import java.lang.reflect.Field
 import java.lang.reflect.Method
+import java.util.Enumeration
 
 internal data class StatusBarMembers(
     val updateGrayScale: Method,
@@ -55,6 +56,11 @@ internal data class PanelMembers(
     val groupIconInitPillBgAndNumberColor: Method?,
     val groupIconInitEntryIconDrawable: Method?,
     val notificationEntryGetKey: Method?,
+    val packageIconResolver: PackageIconResolverMembers?,
+)
+
+internal data class PackageIconResolverMembers(
+    val getPackageIconForNotification: Method,
 )
 
 internal data class RefreshMembers(
@@ -491,7 +497,94 @@ internal object SystemUiMembers {
             groupIconInitPillBgAndNumberColor = groupIconInitPillBgAndNumberColor,
             groupIconInitEntryIconDrawable = groupIconInitEntryIconDrawable,
             notificationEntryGetKey = notificationEntryGetKey,
+            packageIconResolver = resolvePackageIconResolver(classLoader, diagnostics),
         )
+    }
+
+    /**
+     * ColorOS composes several notification icons itself: the contact avatar badge ("显示个人头像"),
+     * the app icon next to an expanded group row and the lock-screen notification icon list. All of
+     * them ask one helper for the app icon to draw, and none of them reads `Notification.smallIcon`
+     * — writing replacements into that field (or patching the status bar descriptor) therefore never
+     * reached the badge.
+     *
+     * The owning SystemUI class is version dependent, so first the known candidates are tried and,
+     * if none exists, the loaded dex list of the SystemUI class loader is scanned by simple name.
+     */
+    fun resolvePackageIconResolver(
+        classLoader: ClassLoader,
+        diagnostics: Diagnostics,
+    ): PackageIconResolverMembers? {
+        val resolverClass = PACKAGE_ICON_RESOLVER_CANDIDATES.firstNotNullOfOrNull {
+            loadOptional(it, classLoader)
+        } ?: findClassBySimpleName(classLoader, PACKAGE_ICON_RESOLVER_SIMPLE_NAME)
+        if (resolverClass == null) {
+            diagnostics.memberMissing(
+                scope = "systemui:package_icon_resolver:class",
+                message = "未找到 $PACKAGE_ICON_RESOLVER_SIMPLE_NAME，跳过头像角标主题图标替换",
+            )
+            return null
+        }
+        val method = resolverClass.declaredMethods
+            .filter {
+                it.name == PACKAGE_ICON_METHOD &&
+                    Drawable::class.java.isAssignableFrom(it.returnType)
+            }
+            .let { matches ->
+                matches.firstOrNull {
+                    it.parameterTypes.any { parameter ->
+                        parameter == StatusBarNotification::class.java
+                    }
+                } ?: matches.firstOrNull()
+            }
+            ?.also { it.isAccessible = true }
+        if (method == null) {
+            diagnostics.memberMissing(
+                scope = "systemui:package_icon_resolver:method",
+                message = "未找到 ${resolverClass.name}.${PACKAGE_ICON_METHOD}()，跳过头像角标主题图标替换",
+            )
+            return null
+        }
+        return PackageIconResolverMembers(getPackageIconForNotification = method)
+    }
+
+    private fun findClassBySimpleName(classLoader: ClassLoader, simpleName: String): Class<*>? {
+        val suffix = ".$simpleName"
+        var loader: ClassLoader? = classLoader
+        while (loader != null) {
+            val found = try {
+                scanDexElements(loader) { name -> name == simpleName || name.endsWith(suffix) }
+            } catch (_: Throwable) {
+                null
+            }
+            if (found != null) return loadOptional(found, classLoader)
+            loader = loader.parent
+        }
+        return null
+    }
+
+    /**
+     * Enumerates the dex class names behind [loader]; used when the vendor moved the class. Every
+     * type involved is framework internals, so the whole walk goes through reflection — no compile
+     * time dependency on the hidden `dalvik.system` classes.
+     */
+    private fun scanDexElements(loader: ClassLoader, matches: (String) -> Boolean): String? {
+        val pathList = Reflection.findField(loader.javaClass, "pathList")
+            ?.get(loader) ?: return null
+        val elements = Reflection.findField(pathList.javaClass, "dexElements")
+            ?.get(pathList) as? Array<*> ?: return null
+        elements.forEach { element ->
+            if (element == null) return@forEach
+            val dexFile = Reflection.findField(element.javaClass, "dexFile")
+                ?.get(element) ?: return@forEach
+            val entries = Reflection.findAnyMethod(dexFile.javaClass, "entries")
+                ?.invoke(dexFile) as? Enumeration<*> ?: return@forEach
+            while (entries.hasMoreElements()) {
+                val name = entries.nextElement() as? String ?: continue
+                if (matches(name)) return name
+            }
+        }
+        return null
     }
 
     fun resolveRefresh(classLoader: ClassLoader): RefreshMembers? {
@@ -1115,6 +1208,20 @@ internal object SystemUiMembers {
         "com.oplus.systemui.notification.lockscreen.notification.CapsuleNotificationCardView"
     private const val CAPSULE_NOTIFICATION_UTILS =
         "com.oplus.systemui.notification.lockscreen.notification.CapsuleNotificationUtils"
+    // ColorOS asks this helper for "the app icon belonging to that notification" in every place it
+    // composes an icon itself (contact avatar badge, expanded group rows, lock-screen icon list).
+    private const val PACKAGE_ICON_RESOLVER_SIMPLE_NAME = "NotificationResolverExImpl"
+    private const val PACKAGE_ICON_METHOD = "getPackageIconForNotification"
+    private val PACKAGE_ICON_RESOLVER_CANDIDATES = arrayOf(
+        "com.oplus.systemui.statusbar.notification.util.NotificationResolverExImpl",
+        "com.oplus.systemui.statusbar.notification.NotificationResolverExImpl",
+        "com.oplus.systemui.statusbar.notification.collection.NotificationResolverExImpl",
+        "com.oplus.systemui.statusbar.notification.pipeline.NotificationResolverExImpl",
+        "com.oplus.systemui.notification.util.NotificationResolverExImpl",
+        "com.oplus.systemui.notification.NotificationResolverExImpl",
+        "com.oplus.systemui.notification.resolver.NotificationResolverExImpl",
+        "com.android.systemui.statusbar.notification.util.NotificationResolverExImpl",
+    )
     private const val FULL_SCREEN_BANNER_HELPER =
         "com.oplus.systemui.notification.interruption.fullscreenbanner.FullScreenBannerHelper"
     private const val FULL_SCREEN_BANNER =

@@ -1,6 +1,7 @@
 package com.fankes.coloros.notify.hook.systemui
 
 import android.annotation.SuppressLint
+import android.content.Context
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffColorFilter
 import android.graphics.drawable.Drawable
@@ -9,7 +10,10 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.ImageView
 import com.fankes.coloros.notify.core.SystemPackages
+import com.fankes.coloros.notify.diagnostics.DiagnosticEvent
+import com.fankes.coloros.notify.diagnostics.DiagnosticLevel
 import com.fankes.coloros.notify.diagnostics.Diagnostics
+import com.fankes.coloros.notify.diagnostics.OccurrencePolicy
 import com.fankes.coloros.notify.hook.HookRegistrar
 import com.fankes.coloros.notify.hook.icon.NotificationIconResolver
 import com.fankes.coloros.notify.hook.runtimeFailure
@@ -27,6 +31,7 @@ internal class NotificationPanelHooks(
     fun install() {
         installOplusHeaderHooks()
         installGroupIconManagerHooks()
+        installPackageIconResolverHooks()
         members.headerOnContentUpdated?.let { method ->
             hooks.install(method, "systemui.panel.header.onContentUpdated") { chain ->
                 val result = chain.proceed()
@@ -99,6 +104,71 @@ internal class NotificationPanelHooks(
                 result
             }
         }
+    }
+
+    /**
+     * Replaces the app icon ColorOS composes itself: the contact-avatar badge ("显示个人头像"), the
+     * icon next to an expanded group row and the lock-screen notification icon list.
+     *
+     * Those rows ask `NotificationResolverExImpl.getPackageIconForNotification(...)` for their icon
+     * and never read `Notification#smallIcon`, so neither writing into that field nor patching the
+     * status bar descriptor ever reached the badge (the previous attempts failed silently exactly
+     * because of this). Handing the desktop theme icon back from the resolver itself is the only
+     * entry point that covers every one of those surfaces at once, and it deliberately does not
+     * yield to the host avatar: the composition keeps its own contact photo, only the small
+     * app-icon badge changes.
+     */
+    private fun installPackageIconResolverHooks() {
+        val resolver = members.packageIconResolver ?: return
+        hooks.install(
+            resolver.getPackageIconForNotification,
+            "systemui.panel.packageIconResolver",
+        ) { chain ->
+            val snapshot = configuration.snapshot
+            if (!snapshot.config.panelIconReplacementEnabled) return@install chain.proceed()
+            if (!snapshot.resolver.panelThemeIconsEnabled()) return@install chain.proceed()
+            val sbn = chain.args.firstOrNull { it is StatusBarNotification } as? StatusBarNotification
+                ?: return@install chain.proceed()
+            val context = systemUiContext() ?: return@install chain.proceed()
+            val packageName = sbn.packageName
+            val replacement = try {
+                snapshot.resolver.resolvePanelThemeDrawable(context, sbn)
+            } catch (throwable: Throwable) {
+                diagnostics.runtimeFailure(
+                    scope = "panel:package_icon_resolver",
+                    message = "角标诊断：宿主应用图标读取失败，保留 ColorOS 原图标",
+                    cause = throwable,
+                    revision = snapshot.revision,
+                )
+                null
+            }
+            if (replacement == null) {
+                diagnostics.report(
+                    level = DiagnosticLevel.Warning,
+                    event = DiagnosticEvent.PackageIconResolved,
+                    message = "角标诊断：$packageName 主题图标解析失败，角标保持原版",
+                    attributes = mapOf("package" to packageName),
+                    occurrence = OccurrencePolicy.Once("package_icon_missing:$packageName"),
+                )
+                return@install chain.proceed()
+            }
+            diagnostics.report(
+                level = DiagnosticLevel.Info,
+                event = DiagnosticEvent.PackageIconResolved,
+                message = "角标诊断：$packageName 已替换为主题图标",
+                attributes = mapOf("package" to packageName),
+                occurrence = OccurrencePolicy.Once("package_icon_replaced:$packageName"),
+            )
+            replacement
+        }
+    }
+
+    private fun systemUiContext(): Context? = try {
+        Class.forName("android.app.ActivityThread")
+            .getDeclaredMethod("currentApplication")
+            .invoke(null) as? Context
+    } catch (_: Throwable) {
+        null
     }
 
     private fun injectGroupSummaryIcon(

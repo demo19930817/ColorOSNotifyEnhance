@@ -51,15 +51,27 @@ internal object NotificationIconPolicy {
         config.rulesEnabled && config.source == PolicyIconSource.DesktopTheme
 
     /**
-     * True only for the packages the user picked: ColorOS renders the personal avatar itself
-     * (avatar + app-icon badge) for those, so on every surface that can show that avatar the host
-     * result must win — the module's own drawable would land on the very same view and hide the
-     * photo. Nothing is implicit: an empty package set means the module replaces icons everywhere.
+     * True only when the host is actually going to compose a contact avatar for this notification:
+     * the package was picked *and* the notification carries something to build an avatar from.
      *
-     * The status bar is not part of this decision — it only shows an avatar for important
-     * conversations, which `StatusBarHooks` already guards through `StatusBarIcon.Type.PeopleAvatar`.
+     * The package check on its own is too coarse. ColorOS composes "personal avatar + app-icon
+     * badge" only when there is an avatar; a picked package's ongoing / foreground-service
+     * notification has none, so yielding there hands the row to the host, which falls back to the
+     * bare `smallIcon` — the themed icon is lost and nothing is preserved. Those notifications must
+     * be replaced as usual, which is why [hostAvatarAvailable] is part of the decision.
      */
     fun shouldYieldToHostAvatar(
+        config: IconPolicyConfig,
+        packageName: String?,
+        hostAvatarAvailable: Boolean,
+    ): Boolean = isAvatarPriorityPackage(config, packageName) && hostAvatarAvailable
+
+    /**
+     * Whether the user picked this package for the personal avatar. Surfaces that cannot tell
+     * whether a given notification has an avatar (AOD reuses a drawable cached by notification key)
+     * use this alone and keep the conservative, package-wide behaviour.
+     */
+    fun isAvatarPriorityPackage(
         config: IconPolicyConfig,
         packageName: String?,
     ): Boolean =

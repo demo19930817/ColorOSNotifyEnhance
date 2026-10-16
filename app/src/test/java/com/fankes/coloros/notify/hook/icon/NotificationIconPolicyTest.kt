@@ -308,12 +308,13 @@ class NotificationIconPolicyTest {
     }
 
     @Test
-    fun `host avatar passthrough needs the master switch and a picked package`() {
+    fun `host avatar passthrough needs the master switch a picked package and an avatar`() {
         val picked = setOf("com.tencent.mm", "com.tencent.mobileqq")
         assertTrue(
             NotificationIconPolicy.shouldYieldToHostAvatar(
                 config = config(avatarPriorityPackages = picked),
                 packageName = "com.tencent.mm",
+                hostAvatarAvailable = true,
             )
         )
         assertTrue(
@@ -323,28 +324,68 @@ class NotificationIconPolicyTest {
                     avatarPriorityPackages = picked,
                 ),
                 packageName = "com.tencent.mobileqq",
+                hostAvatarAvailable = true,
             )
         )
         assertFalse(
             NotificationIconPolicy.shouldYieldToHostAvatar(
                 config = config(hostAvatarPriorityEnabled = false, avatarPriorityPackages = picked),
                 packageName = "com.tencent.mm",
+                hostAvatarAvailable = true,
             )
         )
         assertFalse(
             NotificationIconPolicy.shouldYieldToHostAvatar(
                 config = config(avatarPriorityPackages = picked),
                 packageName = "com.eg.android.AlipayGphone",
+                hostAvatarAvailable = true,
             )
         )
         assertFalse(
             NotificationIconPolicy.shouldYieldToHostAvatar(
                 config = config(),
                 packageName = "com.tencent.mm",
+                hostAvatarAvailable = true,
             )
         )
         assertFalse(
             NotificationIconPolicy.shouldYieldToHostAvatar(
+                config = config(avatarPriorityPackages = picked),
+                packageName = null,
+                hostAvatarAvailable = true,
+            )
+        )
+    }
+
+    /**
+     * A picked package whose notification carries no avatar must still be replaced: handing it to
+     * the host only trades the themed icon for the bare `smallIcon` (WeChat's "视频通话中").
+     */
+    @Test
+    fun `picked package without an avatar keeps the configured icon source`() {
+        val picked = setOf("com.tencent.mm")
+
+        assertFalse(
+            NotificationIconPolicy.shouldYieldToHostAvatar(
+                config = config(avatarPriorityPackages = picked),
+                packageName = "com.tencent.mm",
+                hostAvatarAvailable = false,
+            )
+        )
+        assertTrue(
+            NotificationIconPolicy.isAvatarPriorityPackage(
+                config = config(avatarPriorityPackages = picked),
+                packageName = "com.tencent.mm",
+            )
+        )
+        assertFalse(
+            NotificationIconPolicy.isAvatarPriorityPackage(
+                config = config(hostAvatarPriorityEnabled = false, avatarPriorityPackages = picked),
+                packageName = "com.tencent.mm",
+            )
+        )
+        assertFalse(
+            NotificationIconPolicy.isAvatarPriorityPackage(
                 config = config(avatarPriorityPackages = picked),
                 packageName = null,
             )

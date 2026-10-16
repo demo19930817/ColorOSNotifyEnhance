@@ -74,8 +74,9 @@ internal class NotificationIconResolver(
         originalSmallIcon: Icon?,
     ): PanelIconRenderPlan? = resolveOrFallback("panel", "通知面板图标解析失败") {
         // ColorOS renders the "personal avatar + app-icon badge" composition itself for the picked
-        // packages. Leave those rows, banner cards and lock-screen capsules untouched.
-        if (shouldYieldToHostAvatar(context, sbn.packageName)) return@resolveOrFallback null
+        // packages. Leave those rows, banner cards and lock-screen capsules untouched — but only
+        // when this notification has an avatar for the host to compose (see the resolver method).
+        if (shouldYieldToHostAvatar(context, sbn.packageName, sbn)) return@resolveOrFallback null
         resolvePanelIconPlanBody(context, sbn, originalSmallIcon)
     }
 
@@ -270,19 +271,41 @@ internal class NotificationIconResolver(
 
     /**
      * True when the user picked this package for the personal avatar and ColorOS is going to render
-     * that avatar, in which case the avatar-capable surfaces must keep the host result. Callers that
-     * render outside [resolvePanelIconPlan] (lock-screen capsule, AOD) must ask before consulting
-     * `StatusBarIconReplacementCache`, otherwise a status-bar replacement cached for the same
-     * package would still take the slot.
+     * that avatar for *this* notification, in which case the avatar-capable surfaces must keep the
+     * host result. Callers that render outside [resolvePanelIconPlan] (lock-screen capsule, AOD)
+     * must ask before consulting `StatusBarIconReplacementCache`, otherwise a status-bar
+     * replacement cached for the same package would still take the slot.
+     *
+     * A picked package is not enough by itself — [HostAvatarPresence] decides whether the host has
+     * an avatar to compose. Without that, WeChat's "视频通话中" (an ongoing notification with no
+     * contact photo) stays with the host and shows the bare small icon instead of the themed one.
+     * Pass a null [sbn] on surfaces that only know the notification key; they keep yielding.
      *
      * The status bar deliberately never yields here: for these packages the host only shows an
      * avatar for important conversations, and `StatusBarHooks` already lets that case through.
      */
-    fun shouldYieldToHostAvatar(context: Context, packageName: String?): Boolean {
+    fun shouldYieldToHostAvatar(
+        context: Context,
+        packageName: String?,
+        sbn: StatusBarNotification?,
+    ): Boolean {
+        val hostAvatarAvailable = sbn?.let(HostAvatarPresence::contains) ?: true
         val yield = NotificationIconPolicy.shouldYieldToHostAvatar(
             config = policyConfig,
             packageName = packageName,
+            hostAvatarAvailable = hostAvatarAvailable,
         )
+        if (!yield && sbn != null &&
+            NotificationIconPolicy.isAvatarPriorityPackage(policyConfig, packageName)
+        ) {
+            diagnostics.report(
+                level = DiagnosticLevel.Debug,
+                event = DiagnosticEvent.HostAvatarReplace,
+                message = "已勾选显示个人头像，但本条通知没有头像可合成，按图标来源替换",
+                attributes = mapOf("package" to packageName),
+                occurrence = OccurrencePolicy.Once("icon:host_avatar_replace:$packageName"),
+            )
+        }
         if (yield) {
             // host_listed=false means ColorOS itself does not render an avatar for that package, so
             // the pick only removes the module's own icon there — handy while testing a selection.

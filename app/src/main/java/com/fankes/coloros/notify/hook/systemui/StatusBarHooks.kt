@@ -116,12 +116,12 @@ internal class StatusBarHooks(
                 members.statusBarPreloadedIcon.set(replacement, null)
                 members.statusBarIcon.set(replacement, plan.icon)
                 // Keep Notification.smallIcon in sync so ColorOS group/AOD paths that read it
-                // directly (GroupIconManager, etc.) see the same replacement. Packages picked for the
-                // personal avatar are excluded: those pipelines build the group-summary icon from
-                // the members' small icons, so writing the replacement there would hide the avatar
-                // even though the panel paths already yield.
+                // directly (GroupIconManager, etc.) see the same replacement. Notifications the
+                // host composes an avatar for are excluded: those pipelines build the group-summary
+                // icon from the members' small icons, so writing the replacement there would hide
+                // the avatar even though the panel paths already yield.
                 val groupPathsNeedSync = snapshot.config.panelIconReplacementEnabled &&
-                    !snapshot.resolver.shouldYieldToHostAvatar(context, sbn.packageName)
+                    !snapshot.resolver.shouldYieldToHostAvatar(context, sbn.packageName, sbn)
                 if (groupPathsNeedSync) {
                     members.notificationSmallIcon?.set(sbn.notification, plan.icon)
                 }

@@ -1,12 +1,23 @@
-# ColorOS 通知图标增强（自用改动线）
+# ColorOSNotifyEnhance（ColorOS 图标增强）
 
 本仓库为自用改动线，用于个人设备。
+
+## 命名
+
+| 项目 | 值 |
+| --- | --- |
+| 仓库 / 英文名 | `ColorOSNotifyEnhance` |
+| 桌面显示名 | `ColorOS 图标增强` |
+| 应用 ID / namespace | `com.demo1993.coloros.notifyenhance` |
+| Xposed 入口 | `com.demo1993.coloros.notifyenhance.hook.ModuleMain` |
+| 日志 TAG / 线程名 | `ColorOSNotifyEnhance` |
+| CI 产物名 | `ColorOSNotifyEnhance-<version>.apk` |
 
 ## 上游来源
 
 - [fankes/ColorOSNotifyIcon](https://github.com/fankes/ColorOSNotifyIcon)：原项目，版权归 Fankes Studio 所有
 - [Mangi-11/Glyph](https://github.com/Mangi-11/Glyph)：基于原项目，用 libxposed API 102 重写 Hook 层、用 Miuix 重写 UI 的分支，本仓库的直接上游
-- [robojamu/Glyph](https://github.com/robojamu/Glyph)：基于该项目，用修改状态栏为规则图标，通知栏为主题图标。
+- [robojamu/Glyph](https://github.com/robojamu/Glyph)：基于该项目，把状态栏图标改为规则图标、下拉栏使用主题图标，并加入锁屏与锁屏岛图标替换；本仓库以该分支最新 release `3.4.5-cn` 为源码基线。
 - [Android Notification Icon Project](https://github.com/BetterAndroid/android-notification-icon-project)：通知图标规则库，规则由该项目维护
 
 ## 说明
@@ -14,7 +25,8 @@
 - 本仓库与上述项目无隶属关系，非官方发布。
 - 上游仓库不负责本仓库的改动；相关问题与改动记录留在本仓库。
 - 构建使用仓库内附带的公共开发证书（非生产密钥），任何人可用同一证书重新签名，不作官方发布使用。
-- 本仓库基于上游 `Mangi-11/Glyph 3.4.0` 修改而来；改动明细与日期见 git 提交记录。
+- 本仓库以 `robojamu/Glyph` 的最新 release `3.4.5-cn` 为源码基线重建（该版本自身基于 `Mangi-11/Glyph`）；改动明细与日期见 git 提交记录。
+- 自 `3.7.1-cn` 起应用 ID / namespace 为 `com.demo1993.coloros.notifyenhance`（`3.7.0-cn` 为 `com.demo1993.coloros.notify`），与原项目 `ColorOSNotifyIcon` 的 `com.fankes.coloros.notify` 完全分离：两者可同时安装、互不覆盖，在 LSPosed 管理器与系统应用列表里也不会再被认成同一个模块。
 
 ## 规则来源
 
@@ -58,6 +70,8 @@ App 内「关于 → 检查更新」读取本仓库的 Releases。本仓库版�
 
 感谢原作者 [fankes](https://github.com/fankes) 的开源基础，以及各位图标规则维护者的持续付出。
 
-也感谢 [Mangi-11](https://github.com/Mangi-11/Glyph) 维护的 Glyph 分支，本仓库基于该分支。
+感谢 [Mangi-11](https://github.com/Mangi-11/Glyph) 用 libxposed API 102 重写 Hook 层、用 Miuix 重写 UI，Glyph 分支的形态来自这里。
+
+特别感谢 [robojamu](https://github.com/robojamu/Glyph)：本仓库直接以该分支的最新 release `3.4.5-cn` 为源码基线，锁屏与锁屏岛的图标替换、个人头像角标、以及「状态栏规则图标 / 下拉栏主题图标」这三项行为的原始实现与调优都来自该分支，本仓库在此之上继续修正时序与配色问题。
 
 通用占位符采用 Google Material Icons 的 [`circle_notifications`](https://github.com/google/material-design-icons)，按 [Apache-2.0](third_party/material-design-icons/LICENSE) 许可证使用。

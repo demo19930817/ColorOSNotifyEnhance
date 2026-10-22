@@ -5,6 +5,6 @@
 }
 
 # Debug diagnostics are useful during development but must not enter Release artifacts.
--assumenosideeffects class com.demo1993.coloros.notifyenhance.diagnostics.Diagnostics {
+-assumenosideeffects class com.demo1993.coloros.notify.enhance.diagnostics.Diagnostics {
     public final void debug(...);
 }

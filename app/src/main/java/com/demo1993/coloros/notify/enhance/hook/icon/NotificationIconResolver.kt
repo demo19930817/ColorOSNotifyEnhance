@@ -377,7 +377,8 @@ internal class NotificationIconResolver(
         // the avatar, including the ones (AOD) that would otherwise reuse a status-bar
         // replacement cached during this window.
         if (!configLoaded) return true
-        val hostAvatarAvailable = sbn?.let(HostAvatarPresence::mayCompose) ?: true
+        val verdict = HostAvatarPresence.evaluate(context, sbn)
+        val hostAvatarAvailable = verdict.renderable
         val yield = NotificationIconPolicy.shouldYieldToHostAvatar(
             config = policyConfig,
             packageName = packageName,
@@ -389,8 +390,17 @@ internal class NotificationIconResolver(
             diagnostics.report(
                 level = DiagnosticLevel.Debug,
                 event = DiagnosticEvent.HostAvatarReplace,
-                message = "已勾选显示个人头像，但本条通知没有头像可合成，按图标来源替换",
-                attributes = mapOf("package" to packageName),
+                message = if (verdict.reason == HostAvatarPresence.REASON_LAUNCHER_PLACEHOLDER) {
+                    "已勾选显示个人头像，但头像位是应用图标占位，按主题图标替换"
+                } else {
+                    "已勾选显示个人头像，但本条通知没有头像可合成，按图标来源替换"
+                },
+                attributes = mapOf(
+                    "package" to packageName,
+                    "key" to sbn.key,
+                    "verdict" to verdict.reason,
+                    "difference" to verdict.difference.toString(),
+                ),
                 occurrence = OccurrencePolicy.Once("icon:host_avatar_replace:$packageName"),
             )
         }
@@ -404,6 +414,8 @@ internal class NotificationIconResolver(
                 attributes = mapOf(
                     "package" to packageName,
                     "host_listed" to HostAvatarPackages.contains(context, packageName),
+                    "verdict" to verdict.reason,
+                    "difference" to verdict.difference.toString(),
                 ),
                 occurrence = OccurrencePolicy.Once("icon:host_avatar:$packageName"),
             )
@@ -431,6 +443,7 @@ internal class NotificationIconResolver(
         if (!configLoaded) return null
         if (!NotificationIconPolicy.isAvatarPriorityPackage(policyConfig, sbn.packageName)) return null
         if (!HostAvatarPresence.contains(sbn)) return null
+        if (!HostAvatarPresence.canRenderAvatar(context, sbn)) return null
         if (!panelThemeIconsEnabled()) return null
         val badge = resolveThemeDrawableByPackage(context, sbn.packageName) ?: return null
         val avatar = try {

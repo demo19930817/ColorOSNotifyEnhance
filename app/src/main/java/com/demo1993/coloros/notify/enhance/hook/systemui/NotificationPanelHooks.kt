@@ -8,6 +8,7 @@ import android.graphics.PorterDuffColorFilter
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
 import android.service.notification.StatusBarNotification
+import android.util.LruCache
 import android.view.View
 import android.view.ViewGroup
 import android.widget.ImageView
@@ -361,19 +362,29 @@ internal class NotificationPanelHooks(
 
     /**
      * `getHeaderIconBadgeDrawable(key)` is asked **only** by
-     * `OplusNotificationHeaderViewWrapperExImp.updateIconRoundness(boolean)`, and its answer is
-     * applied straight to the row's icon (`applyExpandedCanvasIconWithBadge`). Two very different
-     * rows reach it, and they need opposite treatment:
+     * `OplusNotificationHeaderViewWrapperExImp.updateIconRoundness(boolean)`, and it is a pure
+     * `headerIconBadgeCache.get(key)` lookup (decompiled) — the composition itself runs in a
+     * coroutine (`scheduleApplyIconWithBadge` → `createBackgroundWithAppIcon`) whose result is
+     * applied through `applyExpandedCanvasIconWithBadge`, which *writes it back into the same
+     * cache*. The host only evicts on row dismissal (`setRemoved()`), never on notification
+     * updates. That protocol drives everything below:
      *
-     * - a notification that carries a contact avatar — the host composes "photo + app-icon badge"
-     *   here, and the badge it embeds comes from `getPackageIconForNotification`, which is already
-     *   hooked. Handing back a plain theme icon therefore *replaced the photo* (3.5.9);
-     * - a collapsed group summary — it has no avatar at all, so the host paints the raw monochrome
-     *   `smallIcon` and the row showed a blank block (3.5.8).
+     * - **null is a signal, not a failure**: it tells `updateIconRoundness` "nothing composed
+     *   yet", which is exactly what makes the host schedule its async "avatar + badge"
+     *   composition. A non-null substitute (the 4.0.1–4.0.4 theme icon) is treated as a finished
+     *   composition — applied, re-cached, and the avatar composition never runs. That is how the
+     *   first WeChat message after a reboot got pinned to the theme icon;
+     * - a notification that carries a contact avatar must therefore be handed back untouched,
+     *   with stale cache entries (placeholder-era composition, or a theme icon pinned here
+     *   earlier) evicted so the host recomposes from the notification it has *now*;
+     * - a collapsed group summary or a placeholder-only row has no avatar to lose, so the
+     *   configured theme icon replaces the "app icon + badge" the host would compose (3.5.8,
+     *   3.5.9). If the app attaches the photo later and re-posts, the renderable branch detects
+     *   the new avatar slot and evicts the pinned theme icon, and the row turns into
+     *   "avatar + badge" like every later message.
      *
      * The row being rounded is recorded by [installOplusHeaderRoundnessReapply] right before the
-     * host calls in, which is what makes the two cases distinguishable. Summaries are always
-     * replaced; avatar rows always yield.
+     * host calls in, which is what makes the two cases distinguishable.
      */
     private fun installHeaderBadgeDrawableHook(
         resolver: PackageIconResolverMembers,
@@ -384,14 +395,80 @@ internal class NotificationPanelHooks(
             if (!snapshot.config.panelIconReplacementEnabled) return@install chain.proceed()
             if (!snapshot.resolver.panelThemeIconsEnabled()) return@install chain.proceed()
             val rowSbn = headerBadgeRow.get()
-            val avatarRow = rowSbn != null &&
-                !HostAvatarPresence.isGroupSummary(rowSbn) &&
-                HostAvatarPresence.mayCompose(rowSbn)
-            if (avatarRow) return@install chain.proceed()
+            val rowContext = resolverContext(resolver, chain.thisObject)
             val rawArgument = chain.args.firstOrNull { it is String } as? String
+            val packageName = rowSbn?.packageName
+                ?: rawArgument?.let(::packageNameFromArgument)
                 ?: return@install chain.proceed()
-            val packageName = rowSbn?.packageName ?: packageNameFromArgument(rawArgument)
-            val context = resolverContext(resolver, chain.thisObject) ?: return@install chain.proceed()
+            val context = rowContext ?: return@install chain.proceed()
+
+            if (rowSbn != null) {
+                val verdict = HostAvatarPresence.evaluate(context, rowSbn)
+                if (verdict.renderable) {
+                    // The notification really carries a sender photo: the "avatar + badge"
+                    // composition must be left to the host. `getHeaderIconBadgeDrawable` is a
+                    // pure LruCache lookup (decompiled: `headerIconBadgeCache.get(key)`), so a
+                    // null return means "not composed yet" — that is the very signal which makes
+                    // the host schedule its async avatar composition and cache the result via
+                    // `putHeaderIconBadgeDrawable`. Handing back any non-null substitute (the
+                    // 4.0.1–4.0.4 theme icon) makes the host treat it as a finished composition,
+                    // apply *and re-cache* it, and the avatar composition never runs — the first
+                    // WeChat message after a reboot was pinned to the theme icon exactly this way.
+                    // So never substitute here; only evict stale cache entries so the host
+                    // recomposes from the notification it has now:
+                    //  1) a placeholder-era composition (host composed "app icon + badge" before
+                    //     the app attached the photo);
+                    //  2) a theme icon an earlier pass of this hook pinned into the cache.
+                    val themedHere = themedBadgeRows.get(rowSbn.key) != null
+                    val hosted = chain.proceed()
+                    val hostedDrawable = hosted as? Drawable
+                    val stalePlaceholder = hostedDrawable != null &&
+                        HostAvatarPresence.looksLikeLauncherIcon(context, packageName, hostedDrawable)
+                    if (themedHere || stalePlaceholder) {
+                        evictHeaderIconBadge(resolver, chain.thisObject, rawArgument)
+                        themedBadgeRows.remove(rowSbn.key)
+                        diagnostics.report(
+                            level = DiagnosticLevel.Info,
+                            event = DiagnosticEvent.HostAvatarYield,
+                            message = "角标诊断：$packageName 通知已有头像，清除过期角标缓存，由宿主重新合成头像+角标",
+                            attributes = mapOf(
+                                "package" to packageName,
+                                "key" to rowSbn.key,
+                                "verdict" to verdict.reason,
+                                "stale" to if (stalePlaceholder) "host-placeholder" else "module-themed",
+                            ),
+                            occurrence = OccurrencePolicy.Once("header_badge_evict:${rowSbn.key}"),
+                        )
+                        return@install null
+                    }
+                    return@install hosted
+                }
+                // The avatar slot holds the app's own icon (or the row has no avatar at all, e.g.
+                // a group summary or an ongoing "视频通话中"): the host would compose "app icon +
+                // badge", so the configured theme icon replaces it. The host caches the theme
+                // icon via `putHeaderIconBadgeDrawable`; when the app later attaches the photo and
+                // re-posts, the renderable branch above detects it and evicts that cache entry,
+                // letting the host recompose "avatar + badge" for the same notification.
+                val replacement = snapshot.resolver.resolveThemeDrawableByPackage(context, packageName)
+                if (replacement != null) {
+                    themedBadgeRows.put(rowSbn.key, true)
+                    diagnostics.report(
+                        level = DiagnosticLevel.Info,
+                        event = DiagnosticEvent.HostAvatarReplace,
+                        message = "角标诊断：$packageName 头像位是应用图标占位（${verdict.reason}），按主题图标替换",
+                        attributes = mapOf(
+                            "package" to packageName,
+                            "key" to rowSbn.key,
+                            "verdict" to verdict.reason,
+                            "difference" to verdict.difference.toString(),
+                        ),
+                        occurrence = OccurrencePolicy.Once("header_badge_placeholder:${rowSbn.key}"),
+                    )
+                    return@install replacement
+                }
+                return@install chain.proceed()
+            }
+
             val replacement = snapshot.resolver.resolveThemeDrawableByPackage(context, packageName)
                 ?: return@install chain.proceed()
             diagnostics.report(
@@ -403,6 +480,28 @@ internal class NotificationPanelHooks(
             )
             replacement
         }
+    }
+
+    /**
+     * Notification keys whose badge cache entry this hook pinned to the theme icon. The entry is
+     * consulted on the avatar-bearing passes above: once the app attaches the sender photo and
+     * re-posts, the cached theme icon is stale and gets evicted so the host recomposes.
+     */
+    private val themedBadgeRows = LruCache<String, Boolean>(64)
+
+    /**
+     * `NotificationResolverExImpl.removeHeaderIconBadgeDrawable(String)` — the host only calls it
+     * itself from `setRemoved()` (row dismissed), never on notification updates, so stale badge
+     * compositions live as long as the notification does unless something evicts them.
+     */
+    private fun evictHeaderIconBadge(
+        resolver: PackageIconResolverMembers,
+        host: Any?,
+        cacheKey: String?,
+    ) {
+        val method = resolver.removeHeaderIconBadgeDrawable ?: return
+        if (host == null || cacheKey == null) return
+        runCatching { method.invoke(host, cacheKey) }
     }
 
     /**

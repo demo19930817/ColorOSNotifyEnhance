@@ -2,9 +2,17 @@ package com.demo1993.coloros.notify.enhance.hook.icon
 
 import android.app.Notification
 import android.app.Person
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Rect
+import android.graphics.drawable.Drawable
+import android.graphics.drawable.Icon
 import android.os.Bundle
 import android.os.Parcelable
 import android.service.notification.StatusBarNotification
+import android.util.LruCache
+import kotlin.math.abs
 
 /**
  * Whether ColorOS has anything to compose its "personal avatar + app-icon badge" out of.
@@ -24,6 +32,16 @@ import android.service.notification.StatusBarNotification
  * keeps the previous behaviour, i.e. the pick still yields.
  */
 internal object HostAvatarPresence {
+
+    /**
+     * The answer to "will the host paint a contact photo here?", with the evidence it was reached
+     * on, so a bug report can be diagnosed from the log alone.
+     */
+    internal data class Verdict(
+        val renderable: Boolean,
+        val reason: String,
+        val difference: Double = -1.0,
+    )
 
     fun contains(sbn: StatusBarNotification?): Boolean {
         val extras = sbn?.notification?.extras ?: return false
@@ -66,6 +84,145 @@ internal object HostAvatarPresence {
         return notification.category?.let { it in AVATAR_CATEGORIES } == true
     }
 
+    /**
+     * The question the yield decision really asks, answered against the artwork instead of the
+     * metadata: will ColorOS paint a contact photo for this row?
+     *
+     * [mayCompose] is too generous on a cold start. WeChat's first message after a reboot is
+     * posted while the app is still booting, and it can ship an icon of its own in
+     * `android.largeIcon` as a placeholder until the sender photo is loaded. `contains` sees a
+     * large icon, the category says "message", so the row yields to the host — and the host then
+     * composes "app icon + badge", which is neither the avatar nor the themed icon. The visible
+     * symptom is exactly "the first WeChat message after a reboot is not themed, later ones are".
+     *
+     * So the large icon is decoded and compared against the package's launcher icon. A large icon
+     * that *is* the launcher icon cannot be a contact photo, and the row is replaced like any
+     * other. `Person` / messaging-style notifications keep yielding without the pixel check: on
+     * those the host reads the avatar from its own contact store, not from `largeIcon`.
+     */
+    fun canRenderAvatar(context: Context?, sbn: StatusBarNotification?): Boolean =
+        evaluate(context, sbn).renderable
+
+    fun evaluate(context: Context?, sbn: StatusBarNotification?): Verdict {
+        if (sbn == null) return Verdict(renderable = true, reason = "no-notification")
+        if (isGroupSummary(sbn)) return Verdict(renderable = false, reason = "group-summary")
+        val notification = sbn.notification ?: return Verdict(renderable = true, reason = "no-notification")
+        val extras = notification.extras
+        if (hasPeople(extras)) return Verdict(renderable = true, reason = "person")
+        if (isMessaging(extras)) return Verdict(renderable = true, reason = "messaging-style")
+        if (context == null) return Verdict(mayCompose(sbn), "no-context")
+        // No large icon at all: keep the old, metadata-driven answer. Some picked packages get
+        // their photo from ColorOS' own contact store instead of the notification, and replacing
+        // those rows is the 3.5.9 "avatar disappeared" regression.
+        val largeIcon = largeIconOf(notification, extras)
+            ?: return Verdict(mayCompose(sbn), "no-large-icon")
+        val cacheKey = sbn.key + "#" + System.identityHashCode(largeIcon)
+        avatarDecisions.get(cacheKey)?.let { return it }
+        val verdict = runCatching { judge(context, sbn.packageName, largeIcon) }
+            .getOrElse { Verdict(mayCompose(sbn), "probe-failed:${it.javaClass.simpleName}") }
+        avatarDecisions.put(cacheKey, verdict)
+        return verdict
+    }
+
+    /**
+     * Whether a drawable the host already composed is, visually, just the app's own launcher icon.
+     *
+     * `getHeaderIconBadgeDrawable` is a pure LruCache lookup (decompiled: it only calls
+     * `headerIconBadgeCache.get(key)`), so whatever it hands back was composed earlier. A cached
+     * result that pixel-matches the launcher icon is a composition from the placeholder era —
+     * made before the app attached the sender photo — and must be evicted so the host recomposes
+     * from the notification it has *now*. The comparison is deliberately coarse — the host rounds,
+     * pads and badges the picture — so only the centre of the artwork is compared.
+     */
+    fun looksLikeLauncherIcon(
+        context: Context?,
+        packageName: String?,
+        drawable: Drawable?,
+    ): Boolean {
+        if (context == null || packageName.isNullOrEmpty() || drawable == null) return false
+        val appIcon = runCatching {
+            context.packageManager.getApplicationIcon(packageName)
+        }.getOrNull() ?: return false
+        val difference = artworkDifference(drawable, appIcon) ?: return false
+        return difference < HOSTED_PLACEHOLDER_TOLERANCE
+    }
+
+    private fun judge(
+        context: Context,
+        packageName: String,
+        largeIcon: Icon,
+    ): Verdict {
+        val avatar = largeIcon.loadDrawable(context)
+            ?: return Verdict(renderable = false, reason = "large-icon-undecodable")
+        val appIcon = runCatching {
+            context.packageManager.getApplicationIcon(packageName)
+        }.getOrNull() ?: return Verdict(renderable = true, reason = "app-icon-unavailable")
+        val difference = artworkDifference(avatar, appIcon)
+            ?: return Verdict(renderable = true, reason = "sample-failed")
+        val placeholder = difference < PLACEHOLDER_TOLERANCE
+        return Verdict(
+            renderable = !placeholder,
+            reason = if (placeholder) REASON_LAUNCHER_PLACEHOLDER else REASON_CONTACT_PHOTO,
+            difference = difference,
+        )
+    }
+
+    /**
+     * Mean per-channel difference over the centre of the artwork.
+     *
+     * Both pictures are drawn into the same 16x16 box and only the middle 10x10 is compared: that
+     * drops the padding, rounding and badge the host adds around the edges while keeping the part
+     * that actually identifies the image. Transparent samples are skipped so a circular avatar is
+     * not penalised for its corners.
+     */
+    private fun artworkDifference(left: Drawable, right: Drawable): Double? {
+        val leftSample = sample(left) ?: return null
+        val rightSample = sample(right) ?: return null
+        var total = 0L
+        var count = 0
+        for (y in SAMPLE_MARGIN until SAMPLE_SIZE - SAMPLE_MARGIN) {
+            for (x in SAMPLE_MARGIN until SAMPLE_SIZE - SAMPLE_MARGIN) {
+                val index = y * SAMPLE_SIZE + x
+                val first = leftSample[index]
+                val second = rightSample[index]
+                if ((first ushr 24) < 32 || (second ushr 24) < 32) continue
+                total += abs(((first ushr 16) and 0xFF) - ((second ushr 16) and 0xFF)).toLong()
+                total += abs(((first ushr 8) and 0xFF) - ((second ushr 8) and 0xFF)).toLong()
+                total += abs((first and 0xFF) - (second and 0xFF)).toLong()
+                count++
+            }
+        }
+        if (count == 0) return null
+        return total.toDouble() / (count * 3.0)
+    }
+
+    private fun sample(drawable: Drawable): IntArray? = try {
+        val bitmap = Bitmap.createBitmap(SAMPLE_SIZE, SAMPLE_SIZE, Bitmap.Config.ARGB_8888)
+        val previousBounds = Rect(drawable.bounds)
+        drawable.setBounds(0, 0, SAMPLE_SIZE, SAMPLE_SIZE)
+        drawable.draw(Canvas(bitmap))
+        drawable.bounds = previousBounds
+        val pixels = IntArray(SAMPLE_SIZE * SAMPLE_SIZE)
+        bitmap.getPixels(pixels, 0, SAMPLE_SIZE, 0, 0, SAMPLE_SIZE, SAMPLE_SIZE)
+        bitmap.recycle()
+        pixels
+    } catch (_: Throwable) {
+        null
+    }
+
+    /**
+     * `Notification#getLargeIcon()` is the modern accessor, but apps that still post the legacy
+     * `android.largeIcon` bitmap leave it null on some builds — hence the extras fallback.
+     */
+    private fun largeIconOf(notification: Notification, extras: Bundle): Icon? =
+        runCatching { notification.getLargeIcon() }.getOrNull()
+            ?: bitmapIcon(extras, Notification.EXTRA_LARGE_ICON)
+            ?: bitmapIcon(extras, Notification.EXTRA_LARGE_ICON_BIG)
+
+    private fun bitmapIcon(extras: Bundle, key: String): Icon? = runCatching {
+        (parcelable(extras, key) as? Bitmap)?.let(Icon::createWithBitmap)
+    }.getOrNull()
+
     private fun hasLargeIcon(extras: Bundle): Boolean =
         parcelable(extras, Notification.EXTRA_LARGE_ICON) != null ||
             parcelable(extras, Notification.EXTRA_LARGE_ICON_BIG) != null
@@ -89,6 +246,27 @@ internal object HostAvatarPresence {
     /** Ongoing / foreground-service rows never carry a contact photo to compose. */
     private const val AVATAR_LESS_FLAGS =
         Notification.FLAG_ONGOING_EVENT or Notification.FLAG_FOREGROUND_SERVICE
+
+    /** Side of the square both icons are scaled to before being compared. */
+    private const val SAMPLE_SIZE = 16
+
+    /** Border pixels dropped from the comparison, which is where host rounding and badges live. */
+    private const val SAMPLE_MARGIN = 3
+
+    /** Mean per-channel difference below which the avatar slot holds the launcher icon. */
+    private const val PLACEHOLDER_TOLERANCE = 22.0
+
+    /** Same comparison, but against a drawable the host already composed (padded, rounded). */
+    private const val HOSTED_PLACEHOLDER_TOLERANCE = 34.0
+
+    /** Keyed by notification key + large-icon identity, so a re-post is re-evaluated. */
+    private val avatarDecisions = LruCache<String, Verdict>(64)
+
+    /** [Verdict.reason] meaning the avatar slot really holds a sender photo. */
+    const val REASON_CONTACT_PHOTO = "contact-photo"
+
+    /** [Verdict.reason] meaning the avatar slot holds the app's own icon. */
+    const val REASON_LAUNCHER_PLACEHOLDER = "launcher-icon-placeholder"
 
     /** Notification categories ColorOS renders with a per-sender avatar. */
     private val AVATAR_CATEGORIES = setOf(

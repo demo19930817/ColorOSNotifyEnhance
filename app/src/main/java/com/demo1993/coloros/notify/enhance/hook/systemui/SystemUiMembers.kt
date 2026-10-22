@@ -98,6 +98,7 @@ internal data class PackageIconResolverMembers(
     val getPackageIconForNotification: Method,
     val getPackageIcon: Method?,
     val getHeaderIconBadgeDrawable: Method?,
+    val removeHeaderIconBadgeDrawable: Method?,
     val getContext: Method?,
 )
 
@@ -700,6 +701,13 @@ internal object SystemUiMembers {
                 resolverClass,
                 "getHeaderIconBadgeDrawable",
                 Drawable::class.java,
+            ),
+            // The badge cache is only invalidated by the host itself on row removal
+            // (`setRemoved()`); the module evicts stale entries when a re-posted notification
+            // finally carries the sender photo.
+            removeHeaderIconBadgeDrawable = Reflection.findAnyMethod(
+                resolverClass,
+                "removeHeaderIconBadgeDrawable",
             ),
             getContext = contextGetter,
         )

@@ -36,6 +36,11 @@ internal data class OplusHeaderMembers(
     val updateIconRoundness: Method?,
     /** `proxyOnContentUpdated(ExpandableNotificationRow): Boolean` — ColorOS 17 content refresh. */
     val proxyOnContentUpdated: Method?,
+    /**
+     * `applyExpandedCanvasIconWithBadge(Drawable, int, int, String)` — the host's *last* write of a
+     * row icon (avatar composition). Everything the host does asynchronously lands here.
+     */
+    val applyExpandedCanvasIconWithBadge: Method?,
 )
 
 internal data class PanelMembers(
@@ -529,6 +534,15 @@ internal object SystemUiMembers {
                     updateIconColor = updateIconColor,
                     updateIconRoundness = updateIconRoundness,
                     proxyOnContentUpdated = proxyOnContentUpdated,
+                    applyExpandedCanvasIconWithBadge = Reflection.findMethodReturning(
+                        extension,
+                        "applyExpandedCanvasIconWithBadge",
+                        Void.TYPE,
+                        Drawable::class.java,
+                        Integer.TYPE,
+                        Integer.TYPE,
+                        String::class.java,
+                    ),
                 )
             }
         }

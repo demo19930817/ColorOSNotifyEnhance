@@ -470,13 +470,18 @@ internal class NotificationPanelHooks(
         row: Any,
         sbn: StatusBarNotification,
         snapshot: RuntimeSnapshot,
+        pass: Int = 0,
     ) {
+        if (pass >= MAX_ICON_VERIFY_PASSES) return
         val written = iconView.drawable ?: return
         iconView.postDelayed({
             try {
                 if (!configuration.isCurrent(snapshot) || !iconView.isAttachedToWindow) return@postDelayed
-                if (iconView.drawable === written) return@postDelayed
                 if (statusBarNotificationFromRow(row)?.key != sbn.key) return@postDelayed
+                if (iconView.drawable === written) {
+                    verifyGroupSummaryIconAfterWrite(iconView, row, sbn, snapshot, pass + 1)
+                    return@postDelayed
+                }
                 diagnostics.report(
                     level = DiagnosticLevel.Debug,
                     event = DiagnosticEvent.IconReapplied,
@@ -485,6 +490,7 @@ internal class NotificationPanelHooks(
                     occurrence = OccurrencePolicy.RateLimited("panel:group_icon_reapply", 60_000L),
                 )
                 injectGroupSummaryIcon(iconView, row, snapshot, verifyAfterWrite = false)
+                verifyGroupSummaryIconAfterWrite(iconView, row, sbn, snapshot, pass + 1)
             } catch (exception: Exception) {
                 diagnostics.runtimeFailure(
                     scope = "panel:group_icon_reapply",
@@ -493,7 +499,7 @@ internal class NotificationPanelHooks(
                     revision = snapshot.revision,
                 )
             }
-        }, PANEL_RETRY_DELAY_MILLIS)
+        }, PANEL_RETRY_DELAY_MILLIS shl pass)
     }
 
     /**
@@ -621,6 +627,40 @@ internal class NotificationPanelHooks(
         installOplusHeaderColorGuard(oplusHeader)
         installOplusHeaderRoundnessReapply(oplusHeader)
         installOplusHeaderContentUpdatedReapply(oplusHeader)
+        installOplusHeaderBadgeApplyReapply(oplusHeader)
+    }
+
+    /**
+     * `applyExpandedCanvasIconWithBadge(...)` is where every asynchronous host repaint of a row icon
+     * ends up: the `Dispatchers.Default` avatar composition (`scheduleApplyIconWithBadge$1`), the
+     * rounded/badged redraw after `getHeaderIconBadgeDrawable`. A one-shot check a few hundred
+     * milliseconds after our own write loses that race whenever the host is slower, and the row then
+     * stays on the plain `smallIcon` for good — the "icon not replaced" rows in the shade.
+     *
+     * Re-applying right after the host returns wins the race by construction: this is its last write,
+     * and the re-apply resolves the same plan the rest of the panel uses (avatar rows yield to
+     * [prefillHostAvatar], everything else gets the themed icon).
+     */
+    private fun installOplusHeaderBadgeApplyReapply(oplusHeader: OplusHeaderMembers) {
+        val method = oplusHeader.applyExpandedCanvasIconWithBadge ?: return
+        hooks.install(method, "systemui.panel.header.applyExpandedCanvasIconWithBadge") { chain ->
+            val result = chain.proceed()
+            chain.thisObject?.let { extension ->
+                try {
+                    oplusHeader.getBase.invoke(extension)?.let { wrapper ->
+                        applyPanelIcon(wrapper, target = wrapper.iconTarget)
+                    }
+                } catch (exception: Exception) {
+                    diagnostics.runtimeFailure(
+                        scope = "panel:header_badge_apply",
+                        message = "Oplus Header 徽标合成后恢复图标失败",
+                        cause = exception,
+                        revision = configuration.snapshot.revision,
+                    )
+                }
+            }
+            result
+        }
     }
 
     /**
@@ -850,10 +890,14 @@ internal class NotificationPanelHooks(
      * smallIcon 并再次 `setImageDrawable`；折叠分组的摘要图标则由 `GroupIconManager` 的协程
      * 重绘。这两处回填如果晚于模块写入，行上就会退回宿主的灰度 smallIcon —— 表现为同应用里
      * 个别通知、或短信自动分组那一行是单色/空白剪影，其它行正常，与包名和通知内容无关，
-     * 是纯时序竞争。写入后比对一次实例即可识别：drawable 已不是我们写的那张就重铺一次。
+     * 是纯时序竞争。
      *
-     * 只补一次、只针对模块接管的行（`plan != null`），因此不会和让路头像互相拉扯——让路时
-     * 宿主本来就要把图标换成自己合成的头像。
+     * 单次校验会输给更慢的宿主：日志里 `icon.reapplied` 与仍未替换的行同时存在，说明回填窗口
+     * 可以晚于 256ms。因此这里按 256 / 512 / 1024 / 2048ms 递增复查 [MAX_ICON_VERIFY_PASSES] 轮，
+     * 每轮只在 drawable 已不是我们写的那张时补铺，实例一致就安静地进入下一轮。
+     *
+     * 只针对模块接管的行（`plan != null`），所以不会和让路头像互相拉扯 —— 让路时
+     * `applyPanelIcon` 会走 `prefillHostAvatar` 重新合成头像而不是写主题图标。
      */
     private fun verifyIconAfterWrite(
         icon: ImageView,
@@ -862,14 +906,19 @@ internal class NotificationPanelHooks(
         sbn: StatusBarNotification,
         snapshot: RuntimeSnapshot,
         target: PanelIconTarget,
+        pass: Int = 0,
     ) {
+        if (pass >= MAX_ICON_VERIFY_PASSES) return
         val written = icon.drawable ?: return
         val rowView = row as? View ?: return
         rowView.postDelayed({
             try {
                 if (!configuration.isCurrent(snapshot) || !icon.isAttachedToWindow) return@postDelayed
-                if (icon.drawable === written) return@postDelayed
                 if (statusBarNotificationFromRow(row)?.key != sbn.key) return@postDelayed
+                if (icon.drawable === written) {
+                    verifyIconAfterWrite(icon, wrapper, row, sbn, snapshot, target, pass + 1)
+                    return@postDelayed
+                }
                 diagnostics.report(
                     level = DiagnosticLevel.Debug,
                     event = DiagnosticEvent.IconReapplied,
@@ -885,6 +934,7 @@ internal class NotificationPanelHooks(
                     allowDeferredLookup = false,
                     verifyAfterWrite = false,
                 )
+                verifyIconAfterWrite(icon, wrapper, row, sbn, snapshot, target, pass + 1)
             } catch (exception: Exception) {
                 diagnostics.runtimeFailure(
                     scope = "panel:icon_reapply",
@@ -893,7 +943,7 @@ internal class NotificationPanelHooks(
                     revision = snapshot.revision,
                 )
             }
-        }, PANEL_RETRY_DELAY_MILLIS)
+        }, PANEL_RETRY_DELAY_MILLIS shl pass)
     }
 
     private fun applyGroupSummaryIcon(iconView: ImageView, entry: Any, snapshot: RuntimeSnapshot) {
@@ -1041,5 +1091,12 @@ internal class NotificationPanelHooks(
 
     private companion object {
         const val PANEL_RETRY_DELAY_MILLIS = 256L
+
+        /**
+         * How many times a written icon is re-checked while the host may still repaint it. Delays
+         * double every pass (256 / 512 / 1024 / 2048 ms), so this covers roughly four seconds — the
+         * window `CachingIconView` and the avatar coroutine were observed to land in.
+         */
+        const val MAX_ICON_VERIFY_PASSES = 4
     }
 }

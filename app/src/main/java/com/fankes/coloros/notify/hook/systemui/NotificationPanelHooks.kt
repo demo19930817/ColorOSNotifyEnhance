@@ -504,7 +504,9 @@ internal class NotificationPanelHooks(
 
     /**
      * ColorOS collapsed-group UI extracts WallpaperColors from the app/small icon and paints a
-     * solid capsule ("色块"). When we already have a rule/theme replacement, take over icon + pill.
+     * solid capsule ("色块"). When we already have a rule/theme replacement we take over the icon
+     * only — the count pill stays on the host palette, otherwise rows split into two different
+     * badge colours depending on which icon path they took.
      */
     private fun installGroupIconManagerHooks() {
         val groupColorAnchor = members.groupIconInitIconViewColor
@@ -578,48 +580,15 @@ internal class NotificationPanelHooks(
             }
         }
 
-        members.groupIconInitPillBgAndNumberColor?.let { method ->
-            hooks.install(method, "systemui.panel.group.initPillBgAndNumberColor") { chain ->
-                val snapshot = configuration.snapshot
-                if (!snapshot.config.panelIconReplacementEnabled) return@install chain.proceed()
-                val iconInfo = chain.args.getOrNull(1) ?: return@install chain.proceed()
-                val frame = chain.args.getOrNull(0) as? android.widget.FrameLayout
-                    ?: return@install chain.proceed()
-                try {
-                    val isGrays = iconInfo.javaClass.methods
-                        .firstOrNull { it.name == "isGraysIcon" && it.parameterTypes.isEmpty() }
-                        ?.invoke(iconInfo) as? Boolean
-                    // Colorful app-icon path paints a vibrant capsule; neutralize it.
-                    if (isGrays == true) return@install chain.proceed()
-                    val result = chain.proceed()
-                    val night = (frame.resources.configuration.uiMode and
-                        android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
-                        android.content.res.Configuration.UI_MODE_NIGHT_YES
-                    val muted = if (night) 0x33FFFFFF.toInt() else 0x33000000
-                    val pill = frame.background as? android.graphics.drawable.GradientDrawable
-                    if (pill != null) {
-                        pill.setColor(muted)
-                        // ColorOS pairs its own pill colour with a contrasting digit colour
-                        // (light pill + black digit by day, dark pill + white digit at night). Only
-                        // the pill is repainted here, so the digit has to be re-picked for the muted
-                        // pill: the darkened day pill would otherwise keep a black, unreadable digit.
-                        // The muted pill is dark in light mode and light in dark mode, hence the flip.
-                        val number = chain.args.getOrNull(2) as? android.widget.TextView
-                        number?.setTextColor(if (night) 0xFF000000.toInt() else 0xFFFFFFFF.toInt())
-                        number?.alpha = 1f
-                    }
-                    result
-                } catch (exception: Exception) {
-                    diagnostics.runtimeFailure(
-                        scope = "panel:group_pill_color",
-                        message = "折叠分组胶囊去色失败，交回 ColorOS 原实现",
-                        cause = exception,
-                        revision = snapshot.revision,
-                    )
-                    chain.proceed()
-                }
-            }
-        }
+        // The count pill is left entirely to ColorOS.
+        //
+        // This used to repaint the pill for "colourful" icons only (`IconInfo.isGraysIcon == false`,
+        // which is the path taken whenever the notification uses the app icon instead of a mono
+        // small icon) with a translucent neutral and a flipped digit colour. Every other row kept the
+        // host colour, so one grouped row in the shade sat on a dark pill while its neighbours were
+        // light — the "第二个上标颜色和别的不一样" mismatch. `initPillBgAndNumberColor` picks
+        // `IconInfo.darkColor` in dark mode for *all* rows, so letting it run keeps the whole list on
+        // one palette; only the pill of the previously muted rows changes.
     }
 
     private fun installOplusHeaderHooks() {

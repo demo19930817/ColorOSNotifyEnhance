@@ -30,6 +30,42 @@ internal object HostAvatarPresence {
         return hasLargeIcon(extras) || hasPeople(extras) || isMessaging(extras)
     }
 
+    /**
+     * A collapsed-group summary never carries a contact photo: ColorOS synthesises it from its
+     * children, so anything composed from it is the raw monochrome `smallIcon`. Rows like that must
+     * be replaced even for a picked package, otherwise the badge shows a blank block.
+     *
+     * Written against the public flag because `Notification.isGroupSummary()` is a hidden API and
+     * would not compile against the public SDK.
+     */
+    fun isGroupSummary(sbn: StatusBarNotification?): Boolean {
+        val flags = sbn?.notification?.flags ?: return false
+        return (flags and Notification.FLAG_GROUP_SUMMARY) != 0
+    }
+
+    /**
+     * Whether the host is *allowed* to compose an avatar for this notification, which is the
+     * question the yield decision actually asks.
+     *
+     * [contains] answers a narrower one ("an avatar bit is present in the extras right now") and
+     * is too strict as a yield gate: after a reboot WeChat's first message is posted from a cold
+     * process and can reach SystemUI before the sender photo is attached, so the extras probe
+     * misses and the row falls back to the themed icon — the very regression users see as "first
+     * message after a reboot loses the avatar".
+     *
+     * Message-shaped notifications (category msg / email / social) are therefore trusted to have
+     * an avatar even when the probe misses, while ongoing and foreground-service notifications are
+     * excluded: WeChat's "视频通话中", media sessions and downloads carry no photo at all, and
+     * yielding there is exactly what turned the themed icon into a bare small icon (3.5.3).
+     */
+    fun mayCompose(sbn: StatusBarNotification?): Boolean {
+        if (sbn == null) return true
+        if (contains(sbn)) return true
+        val notification = sbn.notification ?: return true
+        if ((notification.flags and AVATAR_LESS_FLAGS) != 0) return false
+        return notification.category?.let { it in AVATAR_CATEGORIES } == true
+    }
+
     private fun hasLargeIcon(extras: Bundle): Boolean =
         parcelable(extras, Notification.EXTRA_LARGE_ICON) != null ||
             parcelable(extras, Notification.EXTRA_LARGE_ICON_BIG) != null
@@ -49,4 +85,15 @@ internal object HostAvatarPresence {
         extras.getParcelable(key)
 
     private const val MESSAGING_STYLE = "android.app.Notification\$MessagingStyle"
+
+    /** Ongoing / foreground-service rows never carry a contact photo to compose. */
+    private const val AVATAR_LESS_FLAGS =
+        Notification.FLAG_ONGOING_EVENT or Notification.FLAG_FOREGROUND_SERVICE
+
+    /** Notification categories ColorOS renders with a per-sender avatar. */
+    private val AVATAR_CATEGORIES = setOf(
+        Notification.CATEGORY_MESSAGE,
+        Notification.CATEGORY_EMAIL,
+        Notification.CATEGORY_SOCIAL,
+    )
 }

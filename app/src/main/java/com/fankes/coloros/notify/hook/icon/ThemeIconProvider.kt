@@ -52,43 +52,57 @@ internal class ThemeIconProvider(
 
     fun resolve(context: Context, sbn: StatusBarNotification): Bitmap? {
         val packageName = sbn.packageName?.takeIf { it.isNotBlank() } ?: return null
-        return try {
-            val user = sbn.user
-            // SystemUI's own notifications are posted against UserHandle.ALL, whose identifier is
-            // -1. It is kept as-is for the cache key, but the per-user PackageManager lookups
-            // below refuse to run on it: they would throw NameNotFoundException for a valid
-            // package, and the public API fallback resolves the same information correctly.
-            val userId = sbn.publicUserId
-            val configuration = iconConfiguration.read(context)
-            val key = CacheKey(
-                packageName = packageName,
-                userId = userId,
-                uiMode = configuration.uiMode,
-                themeChanged = configuration.themeChanged,
-                themeChangedFlags = configuration.themeChangedFlags,
-                uxIconConfig = configuration.uxIconConfig,
-            )
-            cachedEntry(key)?.takeIf { !it.isExpired() }?.let { entry ->
-                return (entry.result as? CacheResult.Hit)?.bitmap
-            }
+        return resolveByPackage(context, packageName, sbn.user, sbn.publicUserId)
+    }
 
-            val bitmap = loadThemeBitmap(context, packageName, user, userId)
-            putCacheEntry(
-                key,
-                CacheEntry(
-                    result = bitmap?.let(CacheResult::Hit) ?: CacheResult.Miss,
-                    createdAt = SystemClock.elapsedRealtime(),
-                )
-            )
-            bitmap
-        } catch (exception: Exception) {
-            diagnostics.runtimeFailure(
-                scope = "theme_icon:resolve",
-                message = "桌面主题图标解析失败，将保留通知原始图标",
-                cause = exception,
-            )
-            null
+    /**
+     * Same theme icon for the host paths that only hand over a package name: with "hide notification
+     * content" on, the lock-screen hero and capsule ask for the app icon by package instead of
+     * through a [StatusBarNotification], so there is no user handle to read there.
+     */
+    fun resolveByPackage(context: Context, packageName: String): Bitmap? =
+        resolveByPackage(
+            context = context,
+            packageName = packageName,
+            user = null,
+            userId = USER_HANDLE_ALL,
+        )
+
+    private fun resolveByPackage(
+        context: Context,
+        packageName: String,
+        user: UserHandle?,
+        userId: Int,
+    ): Bitmap? = try {
+        val configuration = iconConfiguration.read(context)
+        val key = CacheKey(
+            packageName = packageName,
+            userId = userId,
+            uiMode = configuration.uiMode,
+            themeChanged = configuration.themeChanged,
+            themeChangedFlags = configuration.themeChangedFlags,
+            uxIconConfig = configuration.uxIconConfig,
+        )
+        cachedEntry(key)?.takeIf { !it.isExpired() }?.let { entry ->
+            return (entry.result as? CacheResult.Hit)?.bitmap
         }
+
+        val bitmap = loadThemeBitmap(context, packageName, user, userId)
+        putCacheEntry(
+            key,
+            CacheEntry(
+                result = bitmap?.let(CacheResult::Hit) ?: CacheResult.Miss,
+                createdAt = SystemClock.elapsedRealtime(),
+            ),
+        )
+        bitmap
+    } catch (exception: Exception) {
+        diagnostics.runtimeFailure(
+            scope = "theme_icon:resolve",
+            message = "桌面主题图标解析失败，将保留通知原始图标",
+            cause = exception,
+        )
+        null
     }
 
     fun clearCache() {
@@ -485,5 +499,11 @@ internal class ThemeIconProvider(
         const val CACHE_TTL_MS = 10_000L
         const val MAX_CACHE_SIZE_KIB = 4 * 1024
         const val MAX_THEME_RENDER_DIMENSION = 512
+        /**
+         * `UserHandle.ALL`: no [StatusBarNotification] means no user handle is available, and the
+         * lookups then fall back to the user-independent public PackageManager API — the same path
+         * SystemUI's own notifications take.
+         */
+        const val USER_HANDLE_ALL = -1
     }
 }

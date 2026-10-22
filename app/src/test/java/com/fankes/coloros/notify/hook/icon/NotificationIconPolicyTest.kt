@@ -8,28 +8,44 @@ import org.junit.Test
 class NotificationIconPolicyTest {
 
     @Test
-    fun `Oplus push is kept only for rule library when handling is disabled`() {
+    fun `each surface owns one fixed icon source`() {
+        assertEquals(
+            PolicyIconSource.RuleLibrary,
+            NotificationIconPolicy.policySource(IconSurface.StatusBar),
+        )
+        assertEquals(
+            PolicyIconSource.DesktopTheme,
+            NotificationIconPolicy.policySource(IconSurface.Panel),
+        )
+    }
+
+    @Test
+    fun `Oplus push is kept only for the status bar rule library when handling is disabled`() {
         assertTrue(
             NotificationIconPolicy.shouldKeepHostDefault(
                 config(handleOplusPush = false),
+                IconSurface.StatusBar,
                 isOplusPush = true,
             )
         )
         assertFalse(
             NotificationIconPolicy.shouldKeepHostDefault(
                 config(handleOplusPush = true),
-                isOplusPush = true,
-            )
-        )
-        assertFalse(
-            NotificationIconPolicy.shouldKeepHostDefault(
-                config(source = PolicyIconSource.DesktopTheme, handleOplusPush = false),
+                IconSurface.StatusBar,
                 isOplusPush = true,
             )
         )
         assertFalse(
             NotificationIconPolicy.shouldKeepHostDefault(
                 config(handleOplusPush = false),
+                IconSurface.Panel,
+                isOplusPush = true,
+            )
+        )
+        assertFalse(
+            NotificationIconPolicy.shouldKeepHostDefault(
+                config(handleOplusPush = false),
+                IconSurface.StatusBar,
                 isOplusPush = false,
             )
         )
@@ -40,32 +56,36 @@ class NotificationIconPolicyTest {
         assertTrue(
             NotificationIconPolicy.shouldKeepHostDefault(
                 config(rulesEnabled = false, handleOplusPush = false),
+                IconSurface.StatusBar,
                 isOplusPush = true,
             )
         )
     }
 
     @Test
-    fun `ColorOS app icon predicate is preserved only by the matching rule-library setting`() {
+    fun `ColorOS app icon predicate is preserved only by the status bar rule library`() {
         assertTrue(
             NotificationIconPolicy.shouldKeepHostAppIconBehavior(
-                config(handleOplusPush = false)
+                config(handleOplusPush = false),
+                IconSurface.StatusBar,
             )
         )
         assertFalse(
             NotificationIconPolicy.shouldKeepHostAppIconBehavior(
-                config(handleOplusPush = true)
+                config(handleOplusPush = true),
+                IconSurface.StatusBar,
             )
         )
         assertFalse(
             NotificationIconPolicy.shouldKeepHostAppIconBehavior(
-                config(source = PolicyIconSource.DesktopTheme, handleOplusPush = false)
+                config(handleOplusPush = false),
+                IconSurface.Panel,
             )
         )
     }
 
     @Test
-    fun `panel gate rejects disabled media and preserved push notifications`() {
+    fun `panel gate rejects the disabled switch and media notifications`() {
         assertFalse(
             NotificationIconPolicy.shouldProcessPanel(
                 config = config(panelEnabled = false),
@@ -80,16 +100,11 @@ class NotificationIconPolicyTest {
                 isOplusPush = false,
             )
         )
-        assertFalse(
-            NotificationIconPolicy.shouldProcessPanel(
-                config = config(handleOplusPush = false),
-                isMediaNotification = false,
-                isOplusPush = true,
-            )
-        )
+        // The notification centre follows the desktop theme, so system pushes are themed like any
+        // other row instead of keeping the pushed icon.
         assertTrue(
             NotificationIconPolicy.shouldProcessPanel(
-                config = config(source = PolicyIconSource.DesktopTheme, handleOplusPush = false),
+                config = config(handleOplusPush = false),
                 isMediaNotification = false,
                 isOplusPush = true,
             )
@@ -104,18 +119,25 @@ class NotificationIconPolicyTest {
     }
 
     @Test
-    fun `desktop theme is resolved only when rules are enabled`() {
+    fun `desktop theme is resolved for the panel only while rules are enabled`() {
         assertTrue(
             NotificationIconPolicy.shouldResolveTheme(
-                config(source = PolicyIconSource.DesktopTheme)
+                config(),
+                IconSurface.Panel,
             )
         )
         assertFalse(
             NotificationIconPolicy.shouldResolveTheme(
-                config(source = PolicyIconSource.DesktopTheme, rulesEnabled = false)
+                config(rulesEnabled = false),
+                IconSurface.Panel,
             )
         )
-        assertFalse(NotificationIconPolicy.shouldResolveTheme(config()))
+        assertFalse(
+            NotificationIconPolicy.shouldResolveTheme(
+                config(),
+                IconSurface.StatusBar,
+            )
+        )
     }
 
     @Test
@@ -159,6 +181,7 @@ class NotificationIconPolicyTest {
                 case.expected,
                 NotificationIconPolicy.selectRuleReplacement(
                     config = config(),
+                    surface = IconSurface.StatusBar,
                     ruleEnabled = case.ruleEnabled,
                     ruleEnabledAll = case.ruleEnabledAll,
                     isOplusPush = false,
@@ -174,6 +197,7 @@ class NotificationIconPolicyTest {
             RuleReplacement.Rule,
             NotificationIconPolicy.selectRuleReplacement(
                 config = config(),
+                surface = IconSurface.StatusBar,
                 ruleEnabled = true,
                 ruleEnabledAll = true,
                 isOplusPush = false,
@@ -184,6 +208,7 @@ class NotificationIconPolicyTest {
             RuleReplacement.Rule,
             NotificationIconPolicy.selectRuleReplacement(
                 config = config(handleOplusPush = true),
+                surface = IconSurface.StatusBar,
                 ruleEnabled = true,
                 ruleEnabledAll = false,
                 isOplusPush = true,
@@ -194,6 +219,7 @@ class NotificationIconPolicyTest {
             RuleReplacement.None,
             NotificationIconPolicy.selectRuleReplacement(
                 config = config(placeholderEnabled = true),
+                surface = IconSurface.StatusBar,
                 ruleEnabled = true,
                 ruleEnabledAll = false,
                 isOplusPush = false,
@@ -208,6 +234,7 @@ class NotificationIconPolicyTest {
             RuleReplacement.Rule,
             NotificationIconPolicy.selectRuleReplacement(
                 config = config(handleOplusPush = true),
+                surface = IconSurface.StatusBar,
                 ruleEnabled = true,
                 ruleEnabledAll = false,
                 isOplusPush = true,
@@ -218,6 +245,7 @@ class NotificationIconPolicyTest {
             RuleReplacement.None,
             NotificationIconPolicy.selectRuleReplacement(
                 config = config(handleOplusPush = true),
+                surface = IconSurface.StatusBar,
                 ruleEnabled = false,
                 ruleEnabledAll = false,
                 isOplusPush = true,
@@ -228,6 +256,7 @@ class NotificationIconPolicyTest {
             RuleReplacement.None,
             NotificationIconPolicy.selectRuleReplacement(
                 config = config(handleOplusPush = false),
+                surface = IconSurface.StatusBar,
                 ruleEnabled = true,
                 ruleEnabledAll = false,
                 isOplusPush = true,
@@ -237,11 +266,38 @@ class NotificationIconPolicyTest {
     }
 
     @Test
-    fun `placeholder is used only for incompatible originals in rule-library mode`() {
+    fun `the panel never falls back to rule icons`() {
+        assertEquals(
+            RuleReplacement.None,
+            NotificationIconPolicy.selectRuleReplacement(
+                config = config(),
+                surface = IconSurface.Panel,
+                ruleEnabled = true,
+                ruleEnabledAll = true,
+                isOplusPush = false,
+                originalCompatibility = OriginalIconCompatibility.Unchecked,
+            )
+        )
+        assertEquals(
+            RuleReplacement.None,
+            NotificationIconPolicy.selectRuleReplacement(
+                config = config(placeholderEnabled = true),
+                surface = IconSurface.Panel,
+                ruleEnabled = false,
+                ruleEnabledAll = false,
+                isOplusPush = false,
+                originalCompatibility = OriginalIconCompatibility.Incompatible,
+            )
+        )
+    }
+
+    @Test
+    fun `placeholder is used only for incompatible originals on the status bar`() {
         assertEquals(
             RuleReplacement.Placeholder,
             NotificationIconPolicy.selectRuleReplacement(
                 config = config(placeholderEnabled = true),
+                surface = IconSurface.StatusBar,
                 ruleEnabled = false,
                 ruleEnabledAll = false,
                 isOplusPush = false,
@@ -252,6 +308,7 @@ class NotificationIconPolicyTest {
             RuleReplacement.None,
             NotificationIconPolicy.selectRuleReplacement(
                 config = config(placeholderEnabled = true),
+                surface = IconSurface.StatusBar,
                 ruleEnabled = false,
                 ruleEnabledAll = false,
                 isOplusPush = false,
@@ -261,30 +318,8 @@ class NotificationIconPolicyTest {
         assertEquals(
             RuleReplacement.None,
             NotificationIconPolicy.selectRuleReplacement(
-                config = config(
-                    source = PolicyIconSource.DesktopTheme,
-                    placeholderEnabled = true,
-                ),
-                ruleEnabled = false,
-                ruleEnabledAll = false,
-                isOplusPush = false,
-                originalCompatibility = OriginalIconCompatibility.Incompatible,
-            )
-        )
-        assertEquals(
-            RuleReplacement.None,
-            NotificationIconPolicy.selectRuleReplacement(
                 config = config(rulesEnabled = false, placeholderEnabled = true),
-                ruleEnabled = true,
-                ruleEnabledAll = true,
-                isOplusPush = false,
-                originalCompatibility = OriginalIconCompatibility.Incompatible,
-            )
-        )
-        assertEquals(
-            RuleReplacement.None,
-            NotificationIconPolicy.selectRuleReplacement(
-                config = config(source = PolicyIconSource.DesktopTheme),
+                surface = IconSurface.StatusBar,
                 ruleEnabled = true,
                 ruleEnabledAll = true,
                 isOplusPush = false,
@@ -299,6 +334,7 @@ class NotificationIconPolicyTest {
             RuleReplacement.Placeholder,
             NotificationIconPolicy.selectRuleReplacement(
                 config = config(placeholderEnabled = true),
+                surface = IconSurface.StatusBar,
                 ruleEnabled = false,
                 ruleEnabledAll = true,
                 isOplusPush = false,
@@ -319,10 +355,7 @@ class NotificationIconPolicyTest {
         )
         assertTrue(
             NotificationIconPolicy.shouldYieldToHostAvatar(
-                config = config(
-                    source = PolicyIconSource.DesktopTheme,
-                    avatarPriorityPackages = picked,
-                ),
+                config = config(avatarPriorityPackages = picked),
                 packageName = "com.tencent.mobileqq",
                 hostAvatarAvailable = true,
             )
@@ -394,7 +427,6 @@ class NotificationIconPolicyTest {
 
     private fun config(
         rulesEnabled: Boolean = true,
-        source: PolicyIconSource = PolicyIconSource.RuleLibrary,
         panelEnabled: Boolean = true,
         handleOplusPush: Boolean = true,
         placeholderEnabled: Boolean = false,
@@ -402,7 +434,6 @@ class NotificationIconPolicyTest {
         avatarPriorityPackages: Set<String> = emptySet(),
     ) = IconPolicyConfig(
         rulesEnabled = rulesEnabled,
-        source = source,
         panelEnabled = panelEnabled,
         handleOplusPush = handleOplusPush,
         placeholderEnabled = placeholderEnabled,

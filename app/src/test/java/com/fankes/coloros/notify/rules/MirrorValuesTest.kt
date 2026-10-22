@@ -17,7 +17,7 @@ class MirrorValuesTest {
             contentSha256 = "a".repeat(64),
             configValues = mapOf(
                 RuleStore.KEY_RULES_ENABLED to false,
-                RuleStore.KEY_ICON_SOURCE_MODE to RuleStore.IconSourceMode.DesktopTheme.prefValue,
+                RuleStore.KEY_PANEL_ICON_REPLACEMENT_ENABLED to true,
             ),
         )
 
@@ -30,6 +30,7 @@ class MirrorValuesTest {
         assertEquals(9L, values[RuleStore.KEY_CONFIG_REVISION])
         assertEquals(7, values[RuleStore.KEY_RULES_COUNT])
         assertEquals(false, values[RuleStore.KEY_RULES_ENABLED])
+        assertEquals(true, values[RuleStore.KEY_PANEL_ICON_REPLACEMENT_ENABLED])
         assertEquals("rules-${"b".repeat(64)}.json", values[RuleStore.KEY_PREVIOUS_RULES_FILE_NAME])
         assertFalse(values.containsKey(RuleStore.KEY_CONFIG_UPDATED_AT))
     }
@@ -40,6 +41,8 @@ class MirrorValuesTest {
         assertTrue(RuleStore.isMirroredConfigKey("rule.custom_name.com.example.app"))
         assertTrue(RuleStore.isMirroredConfigKey("rule.enabled.com.example.app"))
         assertFalse(RuleStore.isMirroredConfigKey("rule.icon_source"))
+        // The "icon source" setting was removed; its key must never reach SystemUI again.
+        assertFalse(RuleStore.isMirroredConfigKey("config.icon_source_mode"))
         assertFalse(RuleStore.isMirroredConfigKey("unrelated.key"))
     }
 }

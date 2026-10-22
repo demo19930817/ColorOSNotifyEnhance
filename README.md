@@ -6,6 +6,7 @@
 
 - [fankes/ColorOSNotifyIcon](https://github.com/fankes/ColorOSNotifyIcon)：原项目，版权归 Fankes Studio 所有
 - [Mangi-11/Glyph](https://github.com/Mangi-11/Glyph)：基于原项目，用 libxposed API 102 重写 Hook 层、用 Miuix 重写 UI 的分支，本仓库的直接上游
+- [robojamu/Glyph](https://github.com/robojamu/Glyph)：基于该项目，用修改状态栏为规则图标，通知栏为主题图标。
 - [Android Notification Icon Project](https://github.com/BetterAndroid/android-notification-icon-project)：通知图标规则库，规则由该项目维护
 
 ## 说明

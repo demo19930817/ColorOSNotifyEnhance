@@ -22,7 +22,6 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.fankes.coloros.notify.BuildConfig
 import com.fankes.coloros.notify.R
-import com.fankes.coloros.notify.rules.RuleStore
 import com.fankes.coloros.notify.ui.component.AdaptiveTopAppBar
 import com.fankes.coloros.notify.ui.component.CardItem
 import com.fankes.coloros.notify.ui.component.blur.BlurredBar
@@ -59,7 +58,6 @@ fun AboutScreen(
     onThemeConfigChange: (ThemeConfig) -> Unit,
     onPredictiveBackChange: (Boolean) -> Unit,
     onRulesEnabledChange: (Boolean) -> Unit,
-    onIconSourceModeChange: (RuleStore.IconSourceMode) -> Unit,
     onPanelIconReplacementEnabledChange: (Boolean) -> Unit,
     onLockScreenCapsuleIconReplacementEnabledChange: (Boolean) -> Unit,
     onOplusPushSpecialHandlingEnabledChange: (Boolean) -> Unit,
@@ -87,7 +85,6 @@ fun AboutScreen(
                 bottomPadding = bottomPadding,
                 homeState = homeState,
                 onRulesEnabledChange = onRulesEnabledChange,
-                onIconSourceModeChange = onIconSourceModeChange,
                 onPanelIconReplacementEnabledChange = onPanelIconReplacementEnabledChange,
                 onLockScreenCapsuleIconReplacementEnabledChange =
                     onLockScreenCapsuleIconReplacementEnabledChange,
@@ -122,7 +119,6 @@ private fun SettingsMainScreen(
     bottomPadding: Dp,
     homeState: HomeScreenState,
     onRulesEnabledChange: (Boolean) -> Unit,
-    onIconSourceModeChange: (RuleStore.IconSourceMode) -> Unit,
     onPanelIconReplacementEnabledChange: (Boolean) -> Unit,
     onLockScreenCapsuleIconReplacementEnabledChange: (Boolean) -> Unit,
     onOplusPushSpecialHandlingEnabledChange: (Boolean) -> Unit,
@@ -168,7 +164,6 @@ private fun SettingsMainScreen(
                     CardItem("moduleSettings") {
                         ModuleSettingsSection(
                             state = homeState,
-                            onIconSourceModeChange = onIconSourceModeChange,
                             onRulesEnabledChange = onRulesEnabledChange,
                             onPanelIconReplacementEnabledChange = onPanelIconReplacementEnabledChange,
                             onLockScreenCapsuleIconReplacementEnabledChange =

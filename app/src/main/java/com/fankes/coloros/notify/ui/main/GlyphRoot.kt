@@ -7,7 +7,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import com.fankes.coloros.notify.rules.IconRule
-import com.fankes.coloros.notify.rules.RuleStore
 import com.fankes.coloros.notify.ui.about.AboutScreen
 import com.fankes.coloros.notify.ui.home.HomeScreen
 import com.fankes.coloros.notify.ui.home.HomeScreenState
@@ -28,7 +27,6 @@ fun GlyphRoot(
     onSyncRules: ((String) -> Unit) -> Unit,
     onRestartSystemUi: ((String) -> Unit) -> Unit,
     onRulesEnabledChange: (Boolean, (String) -> Unit) -> Unit,
-    onIconSourceModeChange: (RuleStore.IconSourceMode, (String) -> Unit) -> Unit,
     onPanelIconReplacementEnabledChange: (Boolean, (String) -> Unit) -> Unit,
     onLockScreenCapsuleIconReplacementEnabledChange: (Boolean, (String) -> Unit) -> Unit,
     onOplusPushSpecialHandlingEnabledChange: (Boolean, (String) -> Unit) -> Unit,
@@ -91,7 +89,6 @@ fun GlyphRoot(
                         onThemeConfigChange(themeConfig.copy(predictiveBackToHomeEnabled = enabled))
                     },
                     onRulesEnabledChange = { onRulesEnabledChange(it, ::showSnackbar) },
-                    onIconSourceModeChange = { onIconSourceModeChange(it, ::showSnackbar) },
                     onPanelIconReplacementEnabledChange = {
                         onPanelIconReplacementEnabledChange(it, ::showSnackbar)
                     },

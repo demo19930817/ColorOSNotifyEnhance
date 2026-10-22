@@ -30,7 +30,6 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.fankes.coloros.notify.R
 import com.fankes.coloros.notify.rules.IconRule
-import com.fankes.coloros.notify.rules.RuleStore
 import com.fankes.coloros.notify.ui.component.MiuixBlurredTopBar
 import com.fankes.coloros.notify.ui.component.rememberMiuixPageBackdrop
 import com.fankes.coloros.notify.ui.theme.ColorOSNotifyIconTheme
@@ -237,8 +236,8 @@ private fun RuleListContent(
     onAddUnadaptedApp: () -> Unit,
 ) {
     var searchExpanded by remember { mutableStateOf(false) }
-    val ruleLibraryMode = state.config.iconSourceMode == RuleStore.IconSourceMode.RuleLibrary
-    val canChooseIcon = state.canEditConfig && state.config.rulesEnabled && ruleLibraryMode
+    // The status bar always uses the rule library, so manual icon binding stays available.
+    val canChooseIcon = state.canEditConfig && state.config.rulesEnabled
 
     val sections = state.sections
     LazyColumn(
@@ -311,7 +310,6 @@ private fun RuleListContent(
                                 checked = state.installedRulesEnabledAll,
                                 enabled = state.canEditConfig &&
                                     state.config.rulesEnabled &&
-                                    state.config.iconSourceMode == RuleStore.IconSourceMode.RuleLibrary &&
                                     state.installedEnabledRulePackageNames.isNotEmpty(),
                                 onCheckedChange = {
                                     onInstalledRulesEnabledAllChange(it, onShowMessage)
@@ -326,7 +324,6 @@ private fun RuleListContent(
                         RuleCard(
                             rule = rule,
                             rulesEnabled = state.config.rulesEnabled,
-                            ruleLibraryMode = ruleLibraryMode,
                             canEditConfig = state.canEditConfig,
                             onEnabledChange = { onRuleEnabledChange(rule, it, onShowMessage) },
                             onEnabledAllChange = { onRuleEnabledAllChange(rule, it, onShowMessage) },
@@ -400,7 +397,6 @@ private fun RuleSectionTitle(section: RuleSection) {
 private fun RuleCard(
     rule: IconRule,
     rulesEnabled: Boolean,
-    ruleLibraryMode: Boolean,
     canEditConfig: Boolean,
     avatarPriorityEnabled: Boolean,
     avatarPriority: Boolean,
@@ -409,7 +405,7 @@ private fun RuleCard(
     onAvatarPriorityChange: (Boolean) -> Unit,
     onChooseIcon: () -> Unit,
 ) {
-    val canChooseIcon = canEditConfig && rulesEnabled && ruleLibraryMode
+    val canChooseIcon = canEditConfig && rulesEnabled
     Card(
         modifier = Modifier
             .padding(horizontal = 12.dp)

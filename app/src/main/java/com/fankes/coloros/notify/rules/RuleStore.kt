@@ -11,19 +11,12 @@ import com.fankes.coloros.notify.diagnostics.OccurrencePolicy
 
 object RuleStore {
 
-    enum class IconSourceMode(val prefValue: String) {
-        RuleLibrary("rule_library"),
-        DesktopTheme("desktop_theme");
-
-        companion object {
-            fun fromPref(value: String?) =
-                entries.firstOrNull { it.prefValue == value } ?: RuleLibrary
-        }
-    }
-
+    /**
+     * Icon sources are fixed per surface: the status bar draws rule-library icons, the notification
+     * centre draws desktop theme icons. There is deliberately no global switch for it.
+     */
     data class ModuleConfig(
         val rulesEnabled: Boolean = true,
-        val iconSourceMode: IconSourceMode = IconSourceMode.RuleLibrary,
         val panelIconReplacementEnabled: Boolean = true,
         val oplusPushSpecialHandlingEnabled: Boolean = true,
         val placeholderIconEnabled: Boolean = false,
@@ -32,6 +25,24 @@ object RuleStore {
         /** Packages whose notifications must keep the avatar ColorOS renders itself. */
         val avatarPriorityPackages: Set<String> = emptySet(),
     )
+
+    /**
+     * Stand-in configuration for the window between SystemUI start and the first published
+     * snapshot: the real one is read asynchronously from the module process.
+     *
+     * The placeholder used to be an all-on [ModuleConfig] with an empty
+     * [ModuleConfig.avatarPriorityPackages], so every package counted as "not picked" and every
+     * surface replaced the contact avatar ColorOS composes itself — a reboot's first
+     * notification regularly lands in that window and kept the wrong icon. "Nothing is known
+     * yet" must therefore mean "replace nothing and yield everywhere", which is also what the
+     * diagnostics already promise when the remote preferences cannot be opened at all.
+     */
+    fun unloadedModuleConfig(): ModuleConfig =
+        ModuleConfig(
+            rulesEnabled = false,
+            panelIconReplacementEnabled = false,
+            lockScreenCapsuleIconReplacementEnabled = false,
+        )
 
     data class MirrorSnapshot(
         val rulesJson: String,
@@ -70,7 +81,6 @@ object RuleStore {
     const val KEY_RULES_COUNT = "rules_count"
     const val KEY_RULES_UPDATED_AT = "rules_updated_at"
     const val KEY_RULES_ENABLED = "config.rules_enabled"
-    const val KEY_ICON_SOURCE_MODE = "config.icon_source_mode"
     const val KEY_PANEL_ICON_REPLACEMENT_ENABLED = "config.panel_icon_replacement_enabled"
     const val KEY_OPLUS_PUSH_SPECIAL_HANDLING_ENABLED = "config.oplus_push_special_handling_enabled"
     const val KEY_PLACEHOLDER_ICON_ENABLED = "config.placeholder_icon_enabled"
@@ -106,6 +116,8 @@ object RuleStore {
         "last_framework_api",
         "last_scope_list",
         "last_framework_connected_at",
+        // Removed with the "icon source" setting; the source is fixed per surface now.
+        "config.icon_source_mode",
     )
 
     private val mutationLock = Any()
@@ -295,10 +307,6 @@ object RuleStore {
         putBoolean(KEY_RULES_ENABLED, enabled)
     }
 
-    fun setIconSourceMode(mode: IconSourceMode) = editConfig {
-        putString(KEY_ICON_SOURCE_MODE, mode.prefValue)
-    }
-
     fun setPanelIconReplacementEnabled(enabled: Boolean) = editConfig {
         putBoolean(KEY_PANEL_ICON_REPLACEMENT_ENABLED, enabled)
     }
@@ -402,7 +410,6 @@ object RuleStore {
 
     fun readModuleConfig(values: Map<String, *>): ModuleConfig = ModuleConfig(
         rulesEnabled = values.boolean(KEY_RULES_ENABLED, true),
-        iconSourceMode = IconSourceMode.fromPref(values[KEY_ICON_SOURCE_MODE] as? String),
         panelIconReplacementEnabled = values.boolean(KEY_PANEL_ICON_REPLACEMENT_ENABLED, true),
         oplusPushSpecialHandlingEnabled = values.boolean(KEY_OPLUS_PUSH_SPECIAL_HANDLING_ENABLED, true),
         placeholderIconEnabled = values.boolean(KEY_PLACEHOLDER_ICON_ENABLED, false),
@@ -731,7 +738,6 @@ object RuleStore {
 
     internal fun isMirroredConfigKey(key: String) =
         key == KEY_RULES_ENABLED ||
-            key == KEY_ICON_SOURCE_MODE ||
             key == KEY_PANEL_ICON_REPLACEMENT_ENABLED ||
             key == KEY_OPLUS_PUSH_SPECIAL_HANDLING_ENABLED ||
             key == KEY_PLACEHOLDER_ICON_ENABLED ||

@@ -18,6 +18,13 @@ import com.fankes.coloros.notify.rules.RuleStore
 
 internal class NotificationIconResolver(
     config: RuleStore.ModuleConfig,
+    /**
+     * False while the placeholder configuration still stands in — see
+     * [RuleStore.unloadedModuleConfig]. Avatar-capable surfaces then yield unconditionally:
+     * an empty pick set is "not known yet", not "nothing picked", and a replacement that lands
+     * on the host's avatar composition can no longer be corrected by it.
+     */
+    private val configLoaded: Boolean = true,
     private val rules: Map<String, IconRule>,
     private val themeIcons: ThemeIconProvider,
     private val iconConfiguration: OplusIconConfigurationReader,
@@ -36,17 +43,84 @@ internal class NotificationIconResolver(
         val tintColor: Int?,
     )
 
+    /**
+     * Desktop theme drawable for the notification icon ColorOS composes itself.
+     *
+     * The avatar badge, expanded group rows and the lock-screen icon list read their app icon from
+     * a single host helper (`NotificationResolverExImpl.getPackageIconForNotification`) and never
+     * touch the views this class patches, so those paths ask for the finished drawable here.
+     * Avatar-priority packages are *not* excluded: yielding there is exactly what left the badge
+     * showing the raw app icon, and the composition keeps its own contact photo either way.
+     */
+    fun resolvePanelThemeDrawable(
+        context: Context,
+        sbn: StatusBarNotification,
+    ): Drawable? = try {
+        themeIcons.resolve(context, sbn)?.toDrawable(context.resources)
+    } catch (exception: Exception) {
+        diagnostics.runtimeFailure(
+            scope = "icon_resolver:panel:theme_drawable",
+            message = "桌面主题图标解码失败，保留 ColorOS 原图标",
+            cause = exception,
+            revision = revision,
+        )
+        null
+    }
+
+    /**
+     * Desktop theme drawable for the host paths that only hand over a package name — the lock-screen
+     * hero and capsule in "hide notification content" mode never pass a StatusBarNotification.
+     */
+    fun resolveThemeDrawableByPackage(
+        context: Context,
+        packageName: String,
+    ): Drawable? = try {
+        themeIcons.resolveByPackage(context, packageName)?.toDrawable(context.resources)
+    } catch (exception: Exception) {
+        diagnostics.runtimeFailure(
+            scope = "icon_resolver:panel:theme_drawable:pkg",
+            message = "按包名解析桌面主题图标失败，保留 ColorOS 原图标",
+            cause = exception,
+            revision = revision,
+        )
+        null
+    }
+
+    /** True when the notification centre currently draws desktop theme icons. */
+    fun panelThemeIconsEnabled(): Boolean =
+        NotificationIconPolicy.shouldResolveTheme(policyConfig, IconSurface.Panel)
+
+    /**
+     * Desktop theme icon as an [Icon] for the lock-screen capsule, which carries both an [Icon] and a
+     * [Drawable] slot and therefore cannot use [resolvePanelThemeDrawable] alone.
+     */
+    fun resolveLockScreenThemeIcon(
+        context: Context,
+        sbn: StatusBarNotification,
+    ): Icon? = try {
+        themeIcons.resolve(context, sbn)?.let { Icon.createWithBitmap(it) }
+    } catch (exception: Exception) {
+        diagnostics.runtimeFailure(
+            scope = "icon_resolver:lockscreen:theme_icon",
+            message = "锁屏胶囊主题图标解码失败，交回宿主实现",
+            cause = exception,
+            revision = revision,
+        )
+        null
+    }
+
     fun resolveStatusBarIconPlan(
         context: Context,
         sbn: StatusBarNotification,
         originalSmallIcon: Icon?,
     ): StatusBarIconRenderPlan? = resolveOrFallback("status_bar", "状态栏图标解析失败") {
         if (shouldKeepHostDefault(sbn)) return null
-        resolveThemeIconReplacement(context, sbn)
+        resolveThemeIconReplacement(context, sbn, IconSurface.StatusBar)
             ?.toStatusBarIconRenderPlanOrNull(context, "status_bar")
             ?.let { return it }
         val forcedReplacement = resolveRuleIconReplacement(
             sbn,
+            IconSurface.StatusBar,
             OriginalIconCompatibility.Unchecked,
         )
         forcedReplacement
@@ -58,6 +132,7 @@ internal class NotificationIconResolver(
         if (forcedReplacement == null) {
             resolveRuleIconReplacement(
                 sbn,
+                IconSurface.StatusBar,
                 originalCompatibility.toPolicyCompatibility(),
             )
                 ?.toStatusBarIconRenderPlanOrNull(context, "status_bar")
@@ -106,14 +181,15 @@ internal class NotificationIconResolver(
                 isOplusPush = sbn.isOplusPush(),
             )
         ) return null
-        resolveThemeIconReplacement(context, sbn)
+        resolveThemeIconReplacement(context, sbn, IconSurface.Panel)
             ?.toPanelIconRenderPlanOrNull(context, "panel")
             ?.let { return it }
 
         val forcedReplacement = resolveRuleIconReplacement(
             sbn,
+            IconSurface.Panel,
             OriginalIconCompatibility.Unchecked,
-        )
+        )?.takeUnless { it is IconReplacement.Placeholder }
         forcedReplacement?.toPanelIconRenderPlanOrNull(context, "panel")?.let { return it }
 
         val originalDrawable = originalSmallIcon?.loadDrawable(context)?.mutate() ?: return null
@@ -121,8 +197,9 @@ internal class NotificationIconResolver(
         if (forcedReplacement == null) {
             resolveRuleIconReplacement(
                 sbn,
+                IconSurface.Panel,
                 originalCompatibility.toPolicyCompatibility(),
-            )
+            )?.takeUnless { it is IconReplacement.Placeholder }
                 ?.toPanelIconRenderPlanOrNull(context, "panel")
                 ?.let { return it }
         }
@@ -139,19 +216,22 @@ internal class NotificationIconResolver(
     private fun resolveThemeIconReplacement(
         context: Context,
         sbn: StatusBarNotification,
+        surface: IconSurface,
     ): IconReplacement? {
-        if (!NotificationIconPolicy.shouldResolveTheme(policyConfig)) return null
+        if (!NotificationIconPolicy.shouldResolveTheme(policyConfig, surface)) return null
         return themeIcons.resolve(context, sbn)?.let(IconReplacement::ThemeIcon)
     }
 
     private fun resolveRuleIconReplacement(
         sbn: StatusBarNotification,
+        surface: IconSurface,
         originalCompatibility: OriginalIconCompatibility,
     ): IconReplacement? {
         val rule = rules[sbn.rulePackageName()]
         return when (
             NotificationIconPolicy.selectRuleReplacement(
                 config = policyConfig,
+                surface = surface,
                 ruleEnabled = rule?.isEnabled == true,
                 ruleEnabledAll = rule?.isEnabledAll == true,
                 isOplusPush = sbn.isOplusPush(),
@@ -267,7 +347,11 @@ internal class NotificationIconResolver(
         packageName.orEmpty()
 
     fun shouldKeepHostDefault(sbn: StatusBarNotification): Boolean =
-        NotificationIconPolicy.shouldKeepHostDefault(policyConfig, sbn.isOplusPush())
+        NotificationIconPolicy.shouldKeepHostDefault(
+            policyConfig,
+            IconSurface.StatusBar,
+            sbn.isOplusPush(),
+        )
 
     /**
      * True when the user picked this package for the personal avatar and ColorOS is going to render
@@ -289,7 +373,11 @@ internal class NotificationIconResolver(
         packageName: String?,
         sbn: StatusBarNotification?,
     ): Boolean {
-        val hostAvatarAvailable = sbn?.let(HostAvatarPresence::contains) ?: true
+        // The remote configuration is still being read: yield on every surface that can show
+        // the avatar, including the ones (AOD) that would otherwise reuse a status-bar
+        // replacement cached during this window.
+        if (!configLoaded) return true
+        val hostAvatarAvailable = sbn?.let(HostAvatarPresence::mayCompose) ?: true
         val yield = NotificationIconPolicy.shouldYieldToHostAvatar(
             config = policyConfig,
             packageName = packageName,
@@ -323,8 +411,44 @@ internal class NotificationIconResolver(
         return yield
     }
 
+    /**
+     * Fills the window the host leaves open before its avatar composition lands.
+     *
+     * ColorOS runs `createBackgroundWithAppIcon` inside `withContext(Dispatchers.Default)`, so an
+     * avatar row first paints the plain `smallIcon` (the app icon) and only then swaps to the
+     * contact photo — the visible "先闪一下应用图标再跳成头像". When the module yields, it can
+     * pre-compose the very same drawable synchronously and hand it to the icon view; the coroutine
+     * result that arrives afterwards is the same picture, so the swap becomes invisible.
+     *
+     * Returns null — callers then leave the host untouchable — unless the notification really has
+     * an avatar to compose and the module would have drawn a theme badge on top of it.
+     */
+    fun composeHostAvatarPreview(
+        context: Context,
+        sbn: StatusBarNotification,
+        contentSizePx: Int,
+    ): Drawable? {
+        if (!configLoaded) return null
+        if (!NotificationIconPolicy.isAvatarPriorityPackage(policyConfig, sbn.packageName)) return null
+        if (!HostAvatarPresence.contains(sbn)) return null
+        if (!panelThemeIconsEnabled()) return null
+        val badge = resolveThemeDrawableByPackage(context, sbn.packageName) ?: return null
+        val avatar = try {
+            sbn.notification.getLargeIcon()?.loadDrawable(context)
+        } catch (exception: Exception) {
+            diagnostics.runtimeFailure(
+                scope = "icon_resolver:host_avatar_prefill",
+                message = "预览头像解码失败，交给宿主异步合成",
+                cause = exception,
+                revision = revision,
+            )
+            null
+        } ?: return null
+        return HostAvatarComposition.compose(context, avatar, badge, sbn.packageName, contentSizePx)
+    }
+
     fun shouldKeepHostAppIconBehavior(): Boolean =
-        NotificationIconPolicy.shouldKeepHostAppIconBehavior(policyConfig)
+        NotificationIconPolicy.shouldKeepHostAppIconBehavior(policyConfig, IconSurface.StatusBar)
 
     private fun StatusBarNotification.isOplusPush(): Boolean =
         opPkg == SYSTEM_FRAMEWORK_PACKAGE && opPkg != packageName
@@ -349,10 +473,6 @@ internal class NotificationIconResolver(
 
     private fun RuleStore.ModuleConfig.toPolicyConfig() = IconPolicyConfig(
         rulesEnabled = rulesEnabled,
-        source = when (iconSourceMode) {
-            RuleStore.IconSourceMode.RuleLibrary -> PolicyIconSource.RuleLibrary
-            RuleStore.IconSourceMode.DesktopTheme -> PolicyIconSource.DesktopTheme
-        },
         panelEnabled = panelIconReplacementEnabled,
         handleOplusPush = oplusPushSpecialHandlingEnabled,
         placeholderEnabled = placeholderIconEnabled,

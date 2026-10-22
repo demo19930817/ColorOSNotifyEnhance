@@ -29,6 +29,13 @@ internal class RuntimeSnapshot(
     val ruleCatalog: RuleCatalog,
     val rules: Map<String, IconRule>,
     val resolver: NotificationIconResolver,
+    /**
+     * False only while the placeholder snapshot stands in before the remote configuration has
+     * been read. An empty [RuleStore.ModuleConfig.avatarPriorityPackages] is then "not known
+     * yet", not "nothing picked", so avatar-capable surfaces must yield — see
+     * [RuleStore.unloadedModuleConfig].
+     */
+    val configLoaded: Boolean = true,
 )
 
 internal class SystemUiConfiguration(
@@ -56,10 +63,11 @@ internal class SystemUiConfiguration(
     @Volatile
     var snapshot: RuntimeSnapshot = createSnapshot(
         revision = 0L,
-        config = RuleStore.ModuleConfig(),
+        config = RuleStore.unloadedModuleConfig(),
         rulesFileName = null,
         catalog = RuleStore.parseCatalog(""),
         rules = emptyMap(),
+        configLoaded = false,
     )
         private set
 
@@ -264,14 +272,17 @@ internal class SystemUiConfiguration(
         rulesFileName: String?,
         catalog: RuleCatalog,
         rules: Map<String, IconRule>,
+        configLoaded: Boolean = true,
     ): RuntimeSnapshot = RuntimeSnapshot(
         revision = revision,
         config = config,
         rulesFileName = rulesFileName,
         ruleCatalog = catalog,
         rules = rules,
+        configLoaded = configLoaded,
         resolver = NotificationIconResolver(
             config = config,
+            configLoaded = configLoaded,
             rules = rules,
             themeIcons = themeIcons,
             iconConfiguration = iconConfiguration,

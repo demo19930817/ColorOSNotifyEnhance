@@ -15,6 +15,11 @@ internal class XposedDiagnosticSink(
     private val processName: String,
 ) : DiagnosticSink {
     override fun write(record: DiagnosticRecord) {
+        // The formal release stays quiet for routine noise: only genuine runtime failures (Error)
+        // and the explicitly traced icon decisions are written. Everything else (hook installed,
+        // config published, per-notification debug chatter) remains source-build only.
+        val traced = record.event in TRACED_EVENTS
+        if (record.level != DiagnosticLevel.Error && !traced) return
         val contextualRecord = record.copy(
             attributes = mapOf("process" to processName) + record.attributes,
         )
@@ -123,3 +128,14 @@ internal fun Diagnostics.installationFailure(
 }
 
 private const val RUNTIME_LOG_INTERVAL_MILLIS = 60_000L
+
+/**
+ * Icon decisions worth one line in a user-submitted LSPosed log even on a release build: they are
+ * already rate-limited at the call site and answer the usual question "why is this row not themed".
+ */
+private val TRACED_EVENTS = setOf(
+    DiagnosticEvent.HostAvatarYield,
+    DiagnosticEvent.HostAvatarReplace,
+    DiagnosticEvent.IconReapplied,
+    DiagnosticEvent.PackageIconResolved,
+)

@@ -12,6 +12,7 @@ import com.fankes.coloros.notify.hook.memberMissing
 import com.fankes.coloros.notify.hook.reflect.Reflection
 import java.lang.reflect.Field
 import java.lang.reflect.Method
+import java.util.Enumeration
 
 internal data class StatusBarMembers(
     val updateGrayScale: Method,
@@ -33,6 +34,8 @@ internal data class OplusHeaderMembers(
     val getBase: Method,
     val updateIconColor: Method?,
     val updateIconRoundness: Method?,
+    /** `proxyOnContentUpdated(ExpandableNotificationRow): Boolean` — ColorOS 17 content refresh. */
+    val proxyOnContentUpdated: Method?,
 )
 
 internal data class PanelMembers(
@@ -55,6 +58,20 @@ internal data class PanelMembers(
     val groupIconInitPillBgAndNumberColor: Method?,
     val groupIconInitEntryIconDrawable: Method?,
     val notificationEntryGetKey: Method?,
+    val packageIconResolver: PackageIconResolverMembers?,
+    /** `ExpandableNotificationRow.shouldShowPublic()` — true while the redacted layout is shown. */
+    val rowShouldShowPublic: Method?,
+    /** `ExpandableNotificationRow.getPublicLayout()` — the "hide notification content" view. */
+    val rowGetPublicLayout: Method?,
+    /** `ExpandableNotificationRow.setHideSensitive(...)` — fires when the switch flips. */
+    val rowSetHideSensitive: Method?,
+)
+
+internal data class PackageIconResolverMembers(
+    val getPackageIconForNotification: Method,
+    val getPackageIcon: Method?,
+    val getHeaderIconBadgeDrawable: Method?,
+    val getContext: Method?,
 )
 
 internal data class RefreshMembers(
@@ -273,6 +290,31 @@ internal object SystemUiMembers {
             return null
         }
 
+        // "Hide notification content" renders the row's *public* (redacted) layout, where ColorOS
+        // never composes a contact avatar. Those members let the hook tell that state apart from
+        // the normal avatar composition instead of guessing from the package name.
+        val rowShouldShowPublic = Reflection.findMethodReturning(
+            expandableRow,
+            "shouldShowPublic",
+            Boolean::class.javaPrimitiveType,
+        )
+        val rowGetPublicLayout = Reflection.findMethodReturning(expandableRow, "getPublicLayout", null)
+        val rowSetHideSensitive = Reflection.findMethodReturning(
+            expandableRow,
+            "setHideSensitive",
+            Void.TYPE,
+            Boolean::class.javaPrimitiveType,
+            Boolean::class.javaPrimitiveType,
+            Long::class.javaPrimitiveType,
+            Long::class.javaPrimitiveType,
+        )
+        if (rowShouldShowPublic == null || rowGetPublicLayout == null) {
+            diagnostics.memberMissing(
+                scope = "systemui:panel:public_layout",
+                message = "未找到 ExpandableNotificationRow 公开视图成员，锁屏隐藏通知内容形态不做图标替换",
+            )
+        }
+
         val headerWrapper = classes.optional(NOTIFICATION_HEADER_WRAPPER)
         val headerOnContentUpdated = headerWrapper?.let {
             Reflection.findMethodReturning(it, "onContentUpdated", Void.TYPE, expandableRow)
@@ -448,6 +490,15 @@ internal object SystemUiMembers {
                 Void.TYPE,
                 Boolean::class.javaPrimitiveType!!,
             )
+            // ColorOS 17: every Oplus template wrapper (messaging / big text / media / call / big
+            // picture) refreshes the header itself through this proxy and never re-enters
+            // NotificationHeaderViewWrapper.onContentUpdated, so it needs its own re-apply point.
+            val proxyOnContentUpdated = Reflection.findMethodReturning(
+                extension,
+                "proxyOnContentUpdated",
+                Boolean::class.javaPrimitiveType!!,
+                expandableRow,
+            )
             if (getBase == null) {
                 diagnostics.memberMissing(
                     scope = "systemui:panel:oplus_header",
@@ -467,7 +518,18 @@ internal object SystemUiMembers {
                         message = "未找到 updateIconRoundness(boolean)，跳过异步圆角覆盖修复",
                     )
                 }
-                OplusHeaderMembers(getBase, updateIconColor, updateIconRoundness)
+                if (proxyOnContentUpdated == null) {
+                    diagnostics.memberMissing(
+                        scope = "systemui:panel:oplus_header_content_updated",
+                        message = "未找到 proxyOnContentUpdated(ExpandableNotificationRow)，模板通知内容更新后不再重铺图标",
+                    )
+                }
+                OplusHeaderMembers(
+                    getBase = getBase,
+                    updateIconColor = updateIconColor,
+                    updateIconRoundness = updateIconRoundness,
+                    proxyOnContentUpdated = proxyOnContentUpdated,
+                )
             }
         }
 
@@ -491,7 +553,110 @@ internal object SystemUiMembers {
             groupIconInitPillBgAndNumberColor = groupIconInitPillBgAndNumberColor,
             groupIconInitEntryIconDrawable = groupIconInitEntryIconDrawable,
             notificationEntryGetKey = notificationEntryGetKey,
+            rowShouldShowPublic = rowShouldShowPublic,
+            rowGetPublicLayout = rowGetPublicLayout,
+            rowSetHideSensitive = rowSetHideSensitive,
+            packageIconResolver = resolvePackageIconResolver(classLoader, diagnostics),
         )
+    }
+
+    /**
+     * ColorOS composes several notification icons itself: the contact avatar badge ("显示个人头像"),
+     * the app icon next to an expanded group row and the lock-screen notification icon list. All of
+     * them ask one helper for the app icon to draw, and none of them reads `Notification.smallIcon`
+     * — writing replacements into that field (or patching the status bar descriptor) therefore never
+     * reached the badge.
+     *
+     * The owning SystemUI class is version dependent, so first the known candidates are tried and,
+     * if none exists, the loaded dex list of the SystemUI class loader is scanned by simple name.
+     */
+    fun resolvePackageIconResolver(
+        classLoader: ClassLoader,
+        diagnostics: Diagnostics,
+    ): PackageIconResolverMembers? {
+        val resolverClass = PACKAGE_ICON_RESOLVER_CANDIDATES.firstNotNullOfOrNull {
+            loadOptional(it, classLoader)
+        } ?: findClassBySimpleName(classLoader, PACKAGE_ICON_RESOLVER_SIMPLE_NAME)
+        if (resolverClass == null) {
+            diagnostics.memberMissing(
+                scope = "systemui:package_icon_resolver:class",
+                message = "未找到 $PACKAGE_ICON_RESOLVER_SIMPLE_NAME，跳过头像角标主题图标替换",
+            )
+            return null
+        }
+        // On ColorOS 15/16 this helper is a Kotlin suspend function, so its erased signature is
+        // `getPackageIconForNotification(StatusBarNotification, Continuation): Object` — filtering by
+        // a Drawable return type silently drops it and the badge keeps the stock icon. Any return
+        // type is accepted; the hook hands the Drawable back through the suspension result.
+        val candidates = resolverClass.declaredMethods.filter { it.name == PACKAGE_ICON_METHOD }
+        val method = candidates
+            .firstOrNull {
+                it.parameterTypes.any { parameter ->
+                    parameter == StatusBarNotification::class.java
+                }
+            }
+            ?: candidates.firstOrNull()
+        if (method == null) {
+            diagnostics.memberMissing(
+                scope = "systemui:package_icon_resolver:method",
+                message = "未找到 ${resolverClass.name}.${PACKAGE_ICON_METHOD}()，跳过头像角标主题图标替换",
+            )
+            return null
+        }
+        method.isAccessible = true
+        val contextGetter = Reflection.findAnyMethod(resolverClass, "getContext", Context::class.java)
+            ?.also { it.isAccessible = true }
+        // "Hide notification content" makes the lock-screen hero skip the notification-scoped entry
+        // and ask for the app icon by package, so those lookups are hooked as well.
+        return PackageIconResolverMembers(
+            getPackageIconForNotification = method,
+            getPackageIcon = Reflection.findAnyMethod(resolverClass, "getPackageIcon"),
+            getHeaderIconBadgeDrawable = Reflection.findAnyMethod(
+                resolverClass,
+                "getHeaderIconBadgeDrawable",
+                Drawable::class.java,
+            ),
+            getContext = contextGetter,
+        )
+    }
+
+    private fun findClassBySimpleName(classLoader: ClassLoader, simpleName: String): Class<*>? {
+        val suffix = ".$simpleName"
+        var loader: ClassLoader? = classLoader
+        while (loader != null) {
+            val found = try {
+                scanDexElements(loader) { name -> name == simpleName || name.endsWith(suffix) }
+            } catch (_: Throwable) {
+                null
+            }
+            if (found != null) return loadOptional(found, classLoader)
+            loader = loader.parent
+        }
+        return null
+    }
+
+    /**
+     * Enumerates the dex class names behind [loader]; used when the vendor moved the class. Every
+     * type involved is framework internals, so the whole walk goes through reflection — no compile
+     * time dependency on the hidden `dalvik.system` classes.
+     */
+    private fun scanDexElements(loader: ClassLoader, matches: (String) -> Boolean): String? {
+        val pathList = Reflection.findField(loader.javaClass, "pathList")
+            ?.get(loader) ?: return null
+        val elements = Reflection.findField(pathList.javaClass, "dexElements")
+            ?.get(pathList) as? Array<*> ?: return null
+        elements.forEach { element ->
+            if (element == null) return@forEach
+            val dexFile = Reflection.findField(element.javaClass, "dexFile")
+                ?.get(element) ?: return@forEach
+            val entries = Reflection.findAnyMethod(dexFile.javaClass, "entries")
+                ?.invoke(dexFile) as? Enumeration<*> ?: return@forEach
+            while (entries.hasMoreElements()) {
+                val name = entries.nextElement() as? String ?: continue
+                if (matches(name)) return name
+            }
+        }
+        return null
     }
 
     fun resolveRefresh(classLoader: ClassLoader): RefreshMembers? {
@@ -1115,6 +1280,20 @@ internal object SystemUiMembers {
         "com.oplus.systemui.notification.lockscreen.notification.CapsuleNotificationCardView"
     private const val CAPSULE_NOTIFICATION_UTILS =
         "com.oplus.systemui.notification.lockscreen.notification.CapsuleNotificationUtils"
+    // ColorOS asks this helper for "the app icon belonging to that notification" in every place it
+    // composes an icon itself (contact avatar badge, expanded group rows, lock-screen icon list).
+    private const val PACKAGE_ICON_RESOLVER_SIMPLE_NAME = "NotificationResolverExImpl"
+    private const val PACKAGE_ICON_METHOD = "getPackageIconForNotification"
+    private val PACKAGE_ICON_RESOLVER_CANDIDATES = arrayOf(
+        "com.oplus.systemui.statusbar.notification.util.NotificationResolverExImpl",
+        "com.oplus.systemui.statusbar.notification.NotificationResolverExImpl",
+        "com.oplus.systemui.statusbar.notification.collection.NotificationResolverExImpl",
+        "com.oplus.systemui.statusbar.notification.pipeline.NotificationResolverExImpl",
+        "com.oplus.systemui.notification.util.NotificationResolverExImpl",
+        "com.oplus.systemui.notification.NotificationResolverExImpl",
+        "com.oplus.systemui.notification.resolver.NotificationResolverExImpl",
+        "com.android.systemui.statusbar.notification.util.NotificationResolverExImpl",
+    )
     private const val FULL_SCREEN_BANNER_HELPER =
         "com.oplus.systemui.notification.interruption.fullscreenbanner.FullScreenBannerHelper"
     private const val FULL_SCREEN_BANNER =

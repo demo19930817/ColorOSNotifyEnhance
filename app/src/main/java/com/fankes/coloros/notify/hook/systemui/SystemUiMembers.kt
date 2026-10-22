@@ -43,6 +43,27 @@ internal data class OplusHeaderMembers(
     val applyExpandedCanvasIconWithBadge: Method?,
 )
 
+/**
+ * The grouped-row count pill ("上标") palette.
+ *
+ * ColorOS derives it from the notification's **own small icon**:
+ * `WallpaperColors.fromDrawable(smallIcon).primaryColor` → Material3 content surface
+ * (`GroupIconManager$createSmallIconColorTask$2`). A monochrome small icon therefore maps to the
+ * neutral surface pill, while a colourful one keeps its own hue — which is why one grouped row can
+ * sit on a mint/green badge while every neighbour is neutral. `isGraysIcon` on the resulting
+ * `IconInfo` is the host's own "mono small icon" flag and is what we branch on.
+ */
+internal data class GroupPillMembers(
+    val isGrayscaleIconInfo: Method,
+    val iconInfoLightColor: Method,
+    val iconInfoDarkColor: Method,
+    /** `IconInfo(int lightColor, int darkColor, int seedColor, Boolean isGraysIcon)`. */
+    val iconInfoConstructor: java.lang.reflect.Constructor<*>,
+    /** `GroupIconManager$Companion.getExpandedPillBgColor(Context, Drawable): Triple`. */
+    val expandedPillBgColor: Method,
+    val expandedPillBgColorReceiver: Any,
+)
+
 internal data class PanelMembers(
     val notificationEntryGetSbn: Method,
     val notificationViewWrapperRow: Field,
@@ -62,6 +83,7 @@ internal data class PanelMembers(
     val groupIconInitIconViewColor: Method?,
     val groupIconInitPillBgAndNumberColor: Method?,
     val groupIconInitEntryIconDrawable: Method?,
+    val groupPill: GroupPillMembers?,
     val notificationEntryGetKey: Method?,
     val packageIconResolver: PackageIconResolverMembers?,
     /** `ExpandableNotificationRow.shouldShowPublic()` — true while the redacted layout is shown. */
@@ -457,6 +479,17 @@ internal object SystemUiMembers {
             "getKey",
             String::class.java,
         )
+        val groupPill = if (groupIconManager != null && iconInfoClass != null) {
+            resolveGroupPill(groupIconManager, iconInfoClass)
+        } else {
+            null
+        }
+        if (groupPill == null && groupIconInitPillBgAndNumberColor != null) {
+            diagnostics.memberMissing(
+                scope = "systemui:panel:group_pill_palette",
+                message = "未找到分组角标取色成员，个别分组行的上标可能仍保留图标原色",
+            )
+        }
         if (
             groupIconInitPillBgAndNumberColor == null ||
             (groupIconInitIconViewColor == null && groupIconInitEntryIconDrawable == null)
@@ -566,11 +599,49 @@ internal object SystemUiMembers {
             groupIconInitIconViewColor = groupIconInitIconViewColor,
             groupIconInitPillBgAndNumberColor = groupIconInitPillBgAndNumberColor,
             groupIconInitEntryIconDrawable = groupIconInitEntryIconDrawable,
+            groupPill = groupPill,
             notificationEntryGetKey = notificationEntryGetKey,
             rowShouldShowPublic = rowShouldShowPublic,
             rowGetPublicLayout = rowGetPublicLayout,
             rowSetHideSensitive = rowSetHideSensitive,
             packageIconResolver = resolvePackageIconResolver(classLoader, diagnostics),
+        )
+    }
+
+    /**
+     * Resolves [GroupPillMembers] — the pieces the pill palette is made of. Kept separate from the
+     * panel member block because a missing piece only degrades the badge colour, never the icon.
+     */
+    private fun resolveGroupPill(
+        groupIconManager: Class<*>,
+        iconInfoClass: Class<*>,
+    ): GroupPillMembers? {
+        val isGrayscale = Reflection.findAnyMethod(
+            iconInfoClass,
+            "isGraysIcon",
+            java.lang.Boolean::class.java,
+        ) ?: return null
+        val lightColor = Reflection.findAnyMethod(iconInfoClass, "getLightColor", Integer.TYPE)
+            ?: return null
+        val darkColor = Reflection.findAnyMethod(iconInfoClass, "getDarkColor", Integer.TYPE)
+            ?: return null
+        val constructor = iconInfoClass.declaredConstructors.firstOrNull { candidate ->
+            candidate.parameterTypes.contentEquals(
+                arrayOf(Integer.TYPE, Integer.TYPE, Integer.TYPE, java.lang.Boolean::class.java),
+            )
+        }?.also { it.isAccessible = true } ?: return null
+        val companion = Reflection.findField(groupIconManager, "Companion")?.get(null) ?: return null
+        val expandedPillBgColor = Reflection.findAnyMethod(
+            companion.javaClass,
+            "getExpandedPillBgColor",
+        ) ?: return null
+        return GroupPillMembers(
+            isGrayscaleIconInfo = isGrayscale,
+            iconInfoLightColor = lightColor,
+            iconInfoDarkColor = darkColor,
+            iconInfoConstructor = constructor,
+            expandedPillBgColor = expandedPillBgColor,
+            expandedPillBgColorReceiver = companion,
         )
     }
 

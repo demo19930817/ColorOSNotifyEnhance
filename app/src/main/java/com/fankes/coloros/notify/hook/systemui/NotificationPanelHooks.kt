@@ -2,8 +2,10 @@ package com.fankes.coloros.notify.hook.systemui
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.graphics.Color
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffColorFilter
+import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
 import android.service.notification.StatusBarNotification
 import android.view.View
@@ -29,6 +31,14 @@ internal class NotificationPanelHooks(
 ) {
     private val systemUiIdCache = ConcurrentHashMap<String, Int>()
     private val headerIconClaims = HeaderIconClaimRegistry<ImageView, Drawable>()
+
+    /**
+     * Neutral `IconInfo` palette (light, dark) for the grouped-row count pill, as produced by the
+     * host for monochrome small icons. Filled from the first grayscale row it sees, or derived from
+     * `getExpandedPillBgColor()` with a white drawable before that.
+     */
+    @Volatile
+    private var cachedNeutralPillPalette: IntArray? = null
 
     /**
      * The notification whose row `updateIconRoundness` is currently rounding. That method is the
@@ -580,15 +590,96 @@ internal class NotificationPanelHooks(
             }
         }
 
-        // The count pill is left entirely to ColorOS.
-        //
-        // This used to repaint the pill for "colourful" icons only (`IconInfo.isGraysIcon == false`,
-        // which is the path taken whenever the notification uses the app icon instead of a mono
-        // small icon) with a translucent neutral and a flipped digit colour. Every other row kept the
-        // host colour, so one grouped row in the shade sat on a dark pill while its neighbours were
-        // light — the "第二个上标颜色和别的不一样" mismatch. `initPillBgAndNumberColor` picks
-        // `IconInfo.darkColor` in dark mode for *all* rows, so letting it run keeps the whole list on
-        // one palette; only the pill of the previously muted rows changes.
+        // The count pill ("上标") is colour-matched to the notification's own small icon by the
+        // host: `GroupIconManager$createSmallIconColorTask$2` runs
+        // `WallpaperColors.fromDrawable(smallIcon)` → Material3 content surface. Mono small icons
+        // therefore land on the neutral surface pill, while a colourful one keeps its hue and the
+        // row shows a coloured badge next to neutral neighbours ("颜色不一样"). Nothing here is
+        // about our replacement icon — the host reads `Notification.smallIcon`, not the view.
+        installGroupPillPaletteAlignment()
+    }
+
+    /**
+     * Pins every grouped row to the neutral pill palette the host itself produces for monochrome
+     * small icons.
+     *
+     * The neutral pair is taken from the host, never guessed: first from any grayscale row that has
+     * already been painted (`IconInfo.isGraysIcon == true`, i.e. the very rows the neighbours use),
+     * and otherwise from `GroupIconManager.getExpandedPillBgColor()` fed a plain white drawable —
+     * the same function the host runs on a mono small icon. The recolour is done by handing the host
+     * a neutral `IconInfo`, so night mode, blur mode, digit colour, alpha and the pill shadow all
+     * stay its own business.
+     */
+    private fun installGroupPillPaletteAlignment() {
+        val method = members.groupIconInitPillBgAndNumberColor ?: return
+        val pill = members.groupPill ?: return
+        hooks.install(method, "systemui.panel.group.pillPalette") { chain ->
+            val snapshot = configuration.snapshot
+            if (!snapshot.config.panelIconReplacementEnabled) return@install chain.proceed()
+            val iconInfo = chain.args.getOrNull(1) ?: return@install chain.proceed()
+            try {
+                val grayscale = pill.isGrayscaleIconInfo.invoke(iconInfo) as? Boolean
+                    ?: return@install chain.proceed()
+                if (grayscale) {
+                    // Remember the palette the host just used for a mono small icon. This is the
+                    // reference every coloured row should end up on.
+                    val light = pill.iconInfoLightColor.invoke(iconInfo) as? Int
+                    val dark = pill.iconInfoDarkColor.invoke(iconInfo) as? Int
+                    if (light != null && dark != null) {
+                        cachedNeutralPillPalette = intArrayOf(light, dark)
+                    }
+                    return@install chain.proceed()
+                }
+                val context = (chain.args.getOrNull(0) as? View)?.context
+                    ?: return@install chain.proceed()
+                val neutral = neutralPillPalette(context) ?: return@install chain.proceed()
+                val replacement = pill.iconInfoConstructor.newInstance(
+                    neutral[0],
+                    neutral[1],
+                    neutral[0],
+                    java.lang.Boolean.FALSE,
+                )
+                chain.proceed(chain.args.toTypedArray().also { it[1] = replacement })
+            } catch (exception: Exception) {
+                diagnostics.runtimeFailure(
+                    scope = "panel:group_pill_palette",
+                    message = "折叠分组上标配色对齐失败，交回 ColorOS 原实现",
+                    cause = exception,
+                    revision = snapshot.revision,
+                )
+                chain.proceed()
+            }
+        }
+    }
+
+    private fun neutralPillPalette(context: Context): IntArray? {
+        cachedNeutralPillPalette?.let { return it }
+        val palette = members.groupPill ?: return null
+        return try {
+            val triple = palette.expandedPillBgColor.invoke(
+                palette.expandedPillBgColorReceiver,
+                context,
+                ColorDrawable(Color.WHITE),
+            ) ?: return null
+            val getters = triple.javaClass.methods
+            val light = getters.firstOrNull { it.name == "getFirst" }?.invoke(triple) as? Int
+                ?: return null
+            val dark = getters.firstOrNull { it.name == "getSecond" }?.invoke(triple) as? Int
+                ?: return null
+            intArrayOf(light, dark).also { cachedNeutralPillPalette = it }
+        } catch (exception: Exception) {
+            // A missing Companion helper only costs the cold-start case; coloured rows then keep
+            // the host colour until a mono row has been painted once.
+            diagnostics.report(
+                level = DiagnosticLevel.Debug,
+                event = DiagnosticEvent.MemberMissing,
+                message = "无法按白色取色推导中性角标配色",
+                cause = exception,
+                attributes = emptyMap(),
+                occurrence = OccurrencePolicy.Once("panel:neutral_pill_palette"),
+            )
+            null
+        }
     }
 
     private fun installOplusHeaderHooks() {

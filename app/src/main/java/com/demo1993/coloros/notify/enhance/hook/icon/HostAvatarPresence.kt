@@ -207,6 +207,14 @@ internal object HostAvatarPresence {
         packageName: String,
         largeIcon: Icon,
     ): Verdict {
+        // A large icon that points at the app's own resources is the app's brand artwork, not a
+        // contact photo. Banking and utility apps post their launcher art there (Bank of China's
+        // green logo, for one), and the pixel comparison below cannot always tell it apart from
+        // the launcher icon once the host crops and pads it. Reading the icon's own type settles
+        // the question without decoding anything.
+        if (isAppOwnResource(largeIcon, packageName)) {
+            return Verdict(renderable = false, reason = REASON_APP_ARTWORK)
+        }
         val avatar = largeIcon.loadDrawable(context)
             ?: return Verdict(renderable = false, reason = "large-icon-undecodable")
         // A blank canvas is not a photo. ColorOS' aggregated rows (the SMS auto-group, for one) ship
@@ -221,11 +229,70 @@ internal object HostAvatarPresence {
         }.getOrNull() ?: return Verdict(renderable = true, reason = "app-icon-unavailable")
         val difference = artworkDifference(avatar, appIcon)
             ?: return Verdict(renderable = true, reason = "sample-failed")
-        val placeholder = difference < PLACEHOLDER_TOLERANCE
+        // The same artwork re-cropped is not always a pixel match: a bank posts its logo as a
+        // square picture while the launcher icon is the same logo inside a themed squircle, so the
+        // raw difference lands just above the placeholder threshold. Falling back to "the mean
+        // colour is the same brand colour" catches those without touching real photos, whose
+        // palette has nothing to do with the app icon's.
+        val sameBrandArtwork = difference < BRAND_PIXEL_TOLERANCE &&
+            (meanColorDelta(avatar, appIcon) ?: Double.MAX_VALUE) < BRAND_COLOR_TOLERANCE
+        val placeholder = difference < PLACEHOLDER_TOLERANCE || sameBrandArtwork
         return Verdict(
             renderable = !placeholder,
-            reason = if (placeholder) REASON_LAUNCHER_PLACEHOLDER else REASON_CONTACT_PHOTO,
+            reason = when {
+                difference < PLACEHOLDER_TOLERANCE -> REASON_LAUNCHER_PLACEHOLDER
+                sameBrandArtwork -> REASON_APP_ARTWORK
+                else -> REASON_CONTACT_PHOTO
+            },
             difference = difference,
+        )
+    }
+
+    /**
+     * `Icon.TYPE_RESOURCE` names a drawable inside a package. When that package is the notifying
+     * app itself, the "large icon" is bundled artwork — a logo, a product shot — not a photo of a
+     * person, and composing "avatar + badge" out of it just draws the app icon in a circle.
+     */
+    private fun isAppOwnResource(icon: Icon, packageName: String): Boolean = runCatching {
+        icon.type == Icon.TYPE_RESOURCE && icon.resPackage == packageName
+    }.getOrDefault(false)
+
+    /**
+     * Mean per-channel distance between the two samples, i.e. how far apart their overall colour
+     * is. Two renderings of one brand mark stay within a few steps of each other; a photo next to
+     * a green logo does not.
+     */
+    private fun meanColorDelta(left: Drawable, right: Drawable): Double? {
+        val first = meanColor(left) ?: return null
+        val second = meanColor(right) ?: return null
+        return (
+            abs(first[0] - second[0]) +
+                abs(first[1] - second[1]) +
+                abs(first[2] - second[2])
+            ) / 3.0
+    }
+
+    private fun meanColor(drawable: Drawable): DoubleArray? {
+        val pixels = sample(drawable) ?: return null
+        var red = 0
+        var green = 0
+        var blue = 0
+        var count = 0
+        for (y in SAMPLE_MARGIN until SAMPLE_SIZE - SAMPLE_MARGIN) {
+            for (x in SAMPLE_MARGIN until SAMPLE_SIZE - SAMPLE_MARGIN) {
+                val pixel = pixels[y * SAMPLE_SIZE + x]
+                if ((pixel ushr 24) < 32) continue
+                red += (pixel ushr 16) and 0xFF
+                green += (pixel ushr 8) and 0xFF
+                blue += pixel and 0xFF
+                count++
+            }
+        }
+        if (count == 0) return null
+        return doubleArrayOf(
+            red.toDouble() / count,
+            green.toDouble() / count,
+            blue.toDouble() / count,
         )
     }
 
@@ -356,6 +423,18 @@ internal object HostAvatarPresence {
     private const val HOSTED_PLACEHOLDER_TOLERANCE = 34.0
 
     /**
+     * Upper bound of the pixel difference still accepted as "the same artwork, re-cropped". Above
+     * it the large icon holds a different picture and the row keeps yielding to the host.
+     */
+    private const val BRAND_PIXEL_TOLERANCE = 48.0
+
+    /**
+     * Mean per-channel distance below which two drawings share a palette. Two renderings of one
+     * brand mark stay well under this; a photo next to a coloured logo never does.
+     */
+    private const val BRAND_COLOR_TOLERANCE = 24.0
+
+    /**
      * Luminance spread below which the avatar slot is a solid fill instead of a picture. One channel
      * step or two of JPEG/rounding noise stays well under it; no photo does.
      */
@@ -375,6 +454,12 @@ internal object HostAvatarPresence {
 
     /** [Verdict.reason] meaning the avatar slot holds a solid fill with no picture in it. */
     const val REASON_BLANK_ARTWORK = "blank-artwork"
+
+    /**
+     * [Verdict.reason] meaning the artwork is the app's own brand picture (a bundled logo), so
+     * there is no person in it and the row keeps the themed icon.
+     */
+    const val REASON_APP_ARTWORK = "app-artwork"
 
     /** Notification categories ColorOS renders with a per-sender avatar. */
     private val AVATAR_CATEGORIES = setOf(

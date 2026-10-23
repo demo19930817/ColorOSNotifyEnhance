@@ -1,6 +1,9 @@
 package com.demo1993.coloros.notify.enhance.hook.games
 
 import android.content.Context
+import android.content.pm.ActivityInfo
+import android.content.pm.ApplicationInfo
+import android.content.pm.PackageManager
 import android.graphics.drawable.Icon
 import android.os.Handler
 import android.os.Looper
@@ -23,14 +26,15 @@ import org.lsposed.hiddenapibypass.HiddenApiBypass
  * The assistant draws three separate copies of an app's launcher icon while a game is running, and
  * none of them go through SystemUI:
  *
- * - the dock / edge panel app icons — [EDGE_MANAGER]`#u(String)`, one drawable per package;
- * - the "弹幕" chat bubble icon — [BARRAGE_MANAGER]`#loadNotificationIcon(Icon, String, Integer)`,
- *   which loads the notification's small icon;
- * - the app mark badge next to a contact avatar in the message box —
+ * - the dock / edge panel app icons — [EDGE_MANAGER]`#u(String)` feeding a Glide loader, bound to
+ *   the cell by [EDGE_CELL]`#c(model, position)`;
+ * - the "弹幕" chat bubble icon — [BARRAGE_MANAGER]`#loadNotificationIcon(Icon, String, Integer)`;
+ * - the app mark next to a contact avatar in the message box —
  *   [MESSAGE_BOX_MANAGER]`#Y(ImageView, MessageData)`.
  *
- * All three end up as a `Drawable` handed to an `ImageView`, so each hook replaces exactly that one
- * drawable and leaves every other decision (layout, alpha, tint, click) to the host.
+ * The launcher-icon hook is the widest of the four and the one that actually catches everything:
+ * every `PackageItemInfo#loadIcon` call inside this process answers with the theme icon, so paths
+ * that cache a `Drawable` (or replay Glide's disk cache) never see the plain artwork at all.
  */
 internal class GameAssistantRuntime(
     private val hooks: HookRegistrar,
@@ -51,7 +55,9 @@ internal class GameAssistantRuntime(
             application = GameProcessApplication::current,
         )
 
+        installLauncherIconHook(classLoader, replacer)
         installEdgePanelIcons(classLoader, replacer)
+        installEdgePanelCells(classLoader, replacer)
         installBarrageIcon(classLoader, replacer)
         installMessageBadge(classLoader, replacer)
         probeThemeIconApi(replacer)
@@ -68,14 +74,52 @@ internal class GameAssistantRuntime(
     /**
      * The theme API is documented for system processes only, so whether this app's uid may use it is
      * decided at runtime. One probe shortly after start records the answer in the release log
-     * (`games.icon_replaced` / `games.icon_skipped`) instead of leaving a silent no-op.
+     * (`games.icon_replaced` / `games.icon_skipped` / `games.icon_selfcheck`) instead of leaving a
+     * silent no-op.
      */
     private fun probeThemeIconApi(replacer: GameIconReplacer) {
         runCatching {
             Handler(Looper.getMainLooper()).postDelayed(
-                { runCatching { replacer.drawableFor(SITE_PROBE, PROBE_PACKAGE) } },
+                {
+                    runCatching {
+                        replacer.drawableFor(SITE_PROBE, PROBE_PACKAGE)
+                        replacer.selfCheck(PROBE_PACKAGE)
+                    }
+                },
                 PROBE_DELAY_MILLIS,
             )
+        }
+    }
+
+    /**
+     * `PackageItemInfo#loadIcon` is the single place a launcher icon is decoded in this process:
+     * `PackageManager#getApplicationIcon`, `LauncherApps` entries and the assistant's own
+     * `ExternalApplicationManager#u` all end up here. Answering with the theme icon covers every
+     * row that draws an app icon, including the ones that keep the `Drawable` around.
+     */
+    private fun installLauncherIconHook(classLoader: ClassLoader, replacer: GameIconReplacer) {
+        val itemInfo = Reflection.loadClassOrNull("android.content.pm.PackageItemInfo", classLoader) { cause ->
+            diagnostics.memberMissing(
+                scope = "games:package_item_info",
+                message = "未找到 PackageItemInfo，跳过应用图标替换",
+                cause = cause,
+            )
+        } ?: return
+        val method = Reflection.findMethod(itemInfo, "loadIcon", PackageManager::class.java) ?: run {
+            diagnostics.memberMissing(
+                scope = "games:package_item_info_load_icon",
+                message = "未找到 PackageItemInfo.loadIcon(PackageManager)，跳过应用图标替换",
+            )
+            return
+        }
+        hooks.install(method, "games.launcher_icon") { chain ->
+            val item = chain.thisObject
+            // Only application-level icons: a service or permission entry has no themed artwork and
+            // resolving one would just cost a lookup.
+            val appLevel = item is ApplicationInfo || item is ActivityInfo
+            val packageName = (item as? android.content.pm.PackageItemInfo)?.packageName
+            (if (appLevel) replacer.drawableFor(SITE_LAUNCHER_ICON, packageName) else null)
+                ?: chain.proceed()
         }
     }
 
@@ -98,6 +142,44 @@ internal class GameAssistantRuntime(
         hooks.install(method, "games.edge_panel.app_icon") { chain ->
             val packageName = chain.args.getOrNull(0) as? String
             replacer.drawableFor(SITE_EDGE_PANEL, packageName) ?: chain.proceed()
+        }
+    }
+
+    /**
+     * The dock cell binds its icon through Glide, whose disk cache still holds the pre-module
+     * picture — the loader is never called again for a package that was already displayed, so
+     * replacing `u(String)` alone leaves the cached bitmap on screen. Binding is the moment the
+     * cell reveals which package it shows, so the themed icon is written there and kept by
+     * [GameIconTakeovers] until Glide's cached result has landed.
+     */
+    private fun installEdgePanelCells(classLoader: ClassLoader, replacer: GameIconReplacer) {
+        val cell = Reflection.loadClassOrNull(EDGE_CELL, classLoader) { cause ->
+            diagnostics.memberMissing(
+                scope = "games:edge_cell_class",
+                message = "未找到游戏助手应用图标卡片，跳过应用栏图标接管",
+                cause = cause,
+            )
+        } ?: return
+        val bind = Reflection.findMethodReturning(cell, BIND_METHOD, Void.TYPE, null, Int::class.javaPrimitiveType)
+            ?: run {
+                diagnostics.memberMissing(
+                    scope = "games:edge_cell_bind",
+                    message = "未找到 GameAppCellView 的绑定方法，跳过应用栏图标接管",
+                )
+                return
+            }
+        val iconGetter = Reflection.findMethod(cell, "getIcon")
+        hooks.install(bind, "games.edge_panel.cell") { chain ->
+            val result = chain.proceed()
+            runCatching {
+                val packageName = packageFromModel(chain.args.getOrNull(0))
+                val icon = iconGetter?.invoke(chain.thisObject) as? ImageView
+                val themed = packageName?.let { replacer.drawableFor(SITE_EDGE_PANEL, it) }
+                if (icon != null && themed != null) {
+                    GameIconTakeovers.take(icon, themed)
+                }
+            }
+            result
         }
     }
 
@@ -134,7 +216,7 @@ internal class GameAssistantRuntime(
 
     /**
      * App mark next to the contact avatar in the message box: the host sets a bundled icon resource
-     * looked up from the package name, so the original call is skipped once a theme icon exists.
+     * looked up from the package name.
      */
     private fun installMessageBadge(classLoader: ClassLoader, replacer: GameIconReplacer) {
         val manager = Reflection.loadClassOrNull(MESSAGE_BOX_MANAGER, classLoader) { cause ->
@@ -164,11 +246,12 @@ internal class GameAssistantRuntime(
             val themed = view?.let { replacer.drawableFor(SITE_MESSAGE_BADGE, packageName) }
             // The host also hides the mark for group conversations, so its own call must still run.
             // It loads the bundled icon through Glide, hence the pending request is cancelled before
-            // the theme icon is written — otherwise Glide would overwrite it a frame later.
+            // the theme icon is written — and kept by the takeover, because that request can still
+            // deliver after the clear.
             val result = chain.proceed()
             if (view != null && themed != null) {
                 clearGlideRequest(view, classLoader)
-                view.setImageDrawable(themed)
+                GameIconTakeovers.take(view, themed)
             }
             result
         }
@@ -176,8 +259,7 @@ internal class GameAssistantRuntime(
 
     /**
      * `Glide.with(view).clear(view)`: cancels the asynchronous load the host had just started.
-     * Reflection keeps the module free of a compile-time Glide dependency; a failure only means the
-     * host's icon may be painted over once, which a later rebind corrects.
+     * Reflection keeps the module free of a compile-time Glide dependency.
      */
     private fun clearGlideRequest(view: ImageView, classLoader: ClassLoader) {
         runCatching {
@@ -185,6 +267,15 @@ internal class GameAssistantRuntime(
             val manager = glide.getMethod("with", View::class.java).invoke(null, view)
             manager?.javaClass?.getMethod("clear", View::class.java)?.invoke(manager, view)
         }
+    }
+
+    /**
+     * The dock cell's model (`w1.b`) wraps an `AppItemState`; the package name is
+     * `model.r().B()`. Called reflectively because both names are obfuscated per build.
+     */
+    private fun packageFromModel(model: Any?): String? {
+        val state = model?.javaClass?.getMethod("r")?.invoke(model) ?: return null
+        return runCatching { state.javaClass.getMethod("B").invoke(state) as? String }.getOrNull()
     }
 
     private fun notificationPackage(messageData: Any?): String? {
@@ -197,11 +288,16 @@ internal class GameAssistantRuntime(
 
     private companion object {
         const val EDGE_MANAGER = "business.secondarypanel.manager.ExternalApplicationManager"
+        const val EDGE_CELL = "business.edgepanel.components.widget.view.GameAppCellView"
         const val BARRAGE_MANAGER = "com.oplus.feature.barragenotification.BarrageManager"
         const val MESSAGE_BOX_MANAGER = "business.mainpanel.welfare.MessageNotificationBoxManager"
         const val MESSAGE_DATA = "business.mainpanel.welfare.MessageData"
         const val THEME_ICON_FRAMEWORK_CLASS = "Landroid/app/UxIconPackageManagerExt;"
 
+        /** `GameAppCellView#c(model, position)`; the model type is obfuscated, hence the wildcard. */
+        const val BIND_METHOD = "c"
+
+        const val SITE_LAUNCHER_ICON = "launcher_icon"
         const val SITE_EDGE_PANEL = "edge_panel"
         const val SITE_BARRAGE = "barrage"
         const val SITE_MESSAGE_BADGE = "message_badge"

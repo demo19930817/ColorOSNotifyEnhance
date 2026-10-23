@@ -1,7 +1,7 @@
 <resources>
-    <string name="app_name">ColorOS 图标增强</string>
+    <string name="app_name">ColorOS 通知图标增强</string>
     <string name="app_description">优化 ColorOS 系统的状态栏与通知中心图标</string>
-    <string name="home_title">ColorOS 图标增强</string>
+    <string name="home_title">ColorOS 通知图标增强</string>
     <string name="tab_home">首页</string>
     <string name="tab_rules">规则</string>
     <string name="tab_about">关于</string>

@@ -1,4 +1,4 @@
-# ColorOSNotifyEnhance（ColorOS 图标增强）
+# ColorOSNotifyEnhance（ColorOS 通知图标增强）
 
 本仓库为自用改动线，用于个人设备。
 
@@ -7,7 +7,7 @@
 | 项目 | 值 |
 | --- | --- |
 | 仓库 / 英文名 | `ColorOSNotifyEnhance` |
-| 桌面显示名 | `ColorOS 图标增强` |
+| 桌面显示名 | `ColorOS 通知图标增强` |
 | 应用 ID / namespace | `com.demo1993.coloros.notify.enhance` |
 | Xposed 入口 | `com.demo1993.coloros.notify.enhance.hook.ModuleMain` |
 | 日志 TAG / 线程名 | `ColorOSNotifyEnhance` |

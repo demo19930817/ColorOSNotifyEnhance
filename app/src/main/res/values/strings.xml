@@ -137,9 +137,9 @@
     <string name="status_hero_module_api">%1$s · API %2$d</string>
     <string name="status_hero_missing_scopes_detail">缺少作用域：%1$s</string>
     <string name="status_hero_inactive_detail">等待 LSPosed 连接模块服务</string>
-    <string name="label_restart_systemui">重启 SystemUI</string>
-    <string name="dialog_restart_title">重启 SystemUI</string>
-    <string name="dialog_restart_message">将立即重启系统界面以使配置生效。此操作会导致屏幕短暂黑屏，是否继续？</string>
+    <string name="label_restart_systemui">重启 SystemUI 和游戏助手</string>
+    <string name="dialog_restart_title">重启 SystemUI 和游戏助手</string>
+    <string name="dialog_restart_message">将立即重启系统界面，并结束正在运行的游戏助手（下次进游戏自动拉起），让两边都加载最新配置。此操作会导致屏幕短暂黑屏，是否继续？</string>
     <string name="dialog_cancel">取消</string>
     <string name="dialog_confirm_restart">确认重启</string>
     <string name="message_rules_update_success">已更新 %1$d 条规则</string>
@@ -152,8 +152,8 @@
     <string name="message_settings_not_applied">设置暂未生效：%1$s</string>
     <string name="message_installed_rules_enabled_all">已为 %1$d 个应用开启全部替换</string>
     <string name="message_installed_rules_disabled_all">已为 %1$d 个应用关闭全部替换</string>
-    <string name="message_restart_requested">已请求重启 SystemUI</string>
-    <string name="message_restart_requested_with_games">已请求重启 SystemUI，正在运行的游戏助手也已重启</string>
+    <string name="message_restart_requested">已请求重启 SystemUI（游戏助手当前未运行）</string>
+    <string name="message_restart_requested_with_games">已请求重启 SystemUI，游戏助手也已重启</string>
     <string name="message_restart_failed">重启失败：%1$s</string>
     <string name="message_restart_failed_generic">无法执行 SystemUI 重启命令</string>
     <string name="message_launcher_icon_hidden">已隐藏，可从 LSPosed 管理器打开；若图标仍显示，请关闭“强制显示桌面图标”</string>

@@ -377,7 +377,16 @@ internal class NotificationIconResolver(
         // the avatar, including the ones (AOD) that would otherwise reuse a status-bar
         // replacement cached during this window.
         if (!configLoaded) return true
-        val verdict = HostAvatarPresence.evaluate(context, sbn)
+        // A row the app flags as a group summary is usually a plain aggregate, but WeChat/WeCom
+        // service accounts post their own picture on exactly those rows ("[2条] …"). Ask the
+        // artwork question there too: a real photo means the host is the one that can compose
+        // "avatar + badge", so the row must yield; a launcher-icon placeholder still answers
+        // `group-summary` and keeps the themed icon.
+        val verdict = HostAvatarPresence.evaluate(
+            context = context,
+            sbn = sbn,
+            allowGroupSummaryAvatar = HostAvatarPresence.isGroupSummary(sbn),
+        )
         val hostAvatarAvailable = verdict.renderable
         val yield = NotificationIconPolicy.shouldYieldToHostAvatar(
             config = policyConfig,
@@ -413,11 +422,13 @@ internal class NotificationIconResolver(
                 message = "宿主将显示联系人头像，本次不覆盖图标",
                 attributes = mapOf(
                     "package" to packageName,
+                    "key" to (sbn?.key ?: ""),
                     "host_listed" to HostAvatarPackages.contains(context, packageName),
                     "verdict" to verdict.reason,
                     "difference" to verdict.difference.toString(),
+                    "summary" to HostAvatarPresence.isGroupSummary(sbn).toString(),
                 ),
-                occurrence = OccurrencePolicy.Once("icon:host_avatar:$packageName"),
+                occurrence = OccurrencePolicy.Once("icon:host_avatar:$packageName:${sbn?.key ?: ""}"),
             )
         }
         return yield
@@ -448,7 +459,7 @@ internal class NotificationIconResolver(
         if (!panelThemeIconsEnabled()) return null
         val badge = resolveThemeDrawableByPackage(context, sbn.packageName) ?: return null
         val avatar = try {
-            sbn.notification.getLargeIcon()?.loadDrawable(context)
+            HostAvatarPresence.avatarDrawable(context, sbn)
         } catch (exception: Exception) {
             diagnostics.runtimeFailure(
                 scope = "icon_resolver:host_avatar_prefill",

@@ -189,6 +189,19 @@ internal object HostAvatarPresence {
         return difference < HOSTED_PLACEHOLDER_TOLERANCE
     }
 
+    /**
+     * The photo the host would compose from, decoded through the very same lookup [evaluate]
+     * judges. Callers must use this instead of reading `getLargeIcon()` themselves: a row is
+     * classified as "has a photo" through [largeIconOf], and decoding through a narrower path is
+     * how a row ends up marked renderable with nothing to draw.
+     */
+    fun avatarDrawable(context: Context?, sbn: StatusBarNotification?): Drawable? {
+        if (context == null) return null
+        val notification = sbn?.notification ?: return null
+        val icon = largeIconOf(notification, notification.extras) ?: return null
+        return runCatching { icon.loadDrawable(context) }.getOrNull()
+    }
+
     private fun judge(
         context: Context,
         packageName: String,
@@ -254,15 +267,22 @@ internal object HostAvatarPresence {
 
     /**
      * `Notification#getLargeIcon()` is the modern accessor, but apps that still post the legacy
-     * `android.largeIcon` bitmap leave it null on some builds — hence the extras fallback.
+     * `android.largeIcon` bitmap leave it null on some builds — hence the extras fallback. Both
+     * forms are accepted there: the platform stores a `Bitmap` for the legacy path and an `Icon`
+     * when the app went through `IconCompat`, and missing either one is what made a row report
+     * "no-large-icon" while carrying a perfectly good photo.
      */
     private fun largeIconOf(notification: Notification, extras: Bundle): Icon? =
         runCatching { notification.getLargeIcon() }.getOrNull()
-            ?: bitmapIcon(extras, Notification.EXTRA_LARGE_ICON)
-            ?: bitmapIcon(extras, Notification.EXTRA_LARGE_ICON_BIG)
+            ?: parcelableIcon(extras, Notification.EXTRA_LARGE_ICON)
+            ?: parcelableIcon(extras, Notification.EXTRA_LARGE_ICON_BIG)
 
-    private fun bitmapIcon(extras: Bundle, key: String): Icon? = runCatching {
-        (parcelable(extras, key) as? Bitmap)?.let(Icon::createWithBitmap)
+    private fun parcelableIcon(extras: Bundle, key: String): Icon? = runCatching {
+        when (val value = parcelable(extras, key)) {
+            is Bitmap -> Icon.createWithBitmap(value)
+            is Icon -> value
+            else -> null
+        }
     }.getOrNull()
 
     private fun hasLargeIcon(extras: Bundle): Boolean =

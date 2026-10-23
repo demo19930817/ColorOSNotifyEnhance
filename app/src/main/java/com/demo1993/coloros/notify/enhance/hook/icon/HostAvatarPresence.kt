@@ -135,25 +135,17 @@ internal object HostAvatarPresence {
                 Verdict(mayCompose(sbn), "no-context")
             }
         }
-        // No large icon at all means the host has no picture to put in the avatar slot, so this
-        // row is replaced like any other. It used to fall back to the metadata answer
-        // ([mayCompose]), which trusted a "message" category to carry a photo that had not arrived
-        // yet — but the host cannot compose an avatar out of nothing either: with no artwork it
-        // paints the raw app icon into the (larger) avatar slot. That is the "first row after a
-        // reboot shows the native icon, oversized and unthemed" report. A photo that lands late
-        // re-posts the notification, and the re-evaluation switches the row back to the host's
-        // composition by itself.
-        //
-        // The legacy reason for the old fallback was the 3.5.9 "avatar disappeared" regression,
-        // i.e. packages whose photo comes from ColorOS' own contact store rather than from the
-        // notification. Those apps still ship *some* artwork in the large icon — the store only
-        // supplies the picture for the summary row, which is handled by the `summary` branch above
-        // — so answering "no avatar" here does not touch them.
+        // No large icon at all is *not* proof that the host has no avatar to paint: WeChat posts
+        // group messages without any artwork, yet ColorOS still fills the slot from its own source
+        // for some of them. Answering "no avatar" here replaced those rows with the theme icon and
+        // lost the avatar, so the metadata answer stays. The row is then watched at draw time
+        // instead (see `guardHeaderIconAgainstHostPlaceholder`) and the theme icon goes back only
+        // when the host's own result really is the bare app icon.
         val largeIcon = largeIconOf(notification, extras)
             ?: return if (summary) {
                 Verdict(renderable = false, reason = REASON_GROUP_SUMMARY)
             } else {
-                Verdict(renderable = false, reason = REASON_NO_LARGE_ICON)
+                Verdict(mayCompose(sbn), REASON_NO_LARGE_ICON)
             }
         val cacheKey = sbn.key + "#" + System.identityHashCode(largeIcon)
         avatarDecisions.get(cacheKey)?.let { return it.forRowType(summary) }

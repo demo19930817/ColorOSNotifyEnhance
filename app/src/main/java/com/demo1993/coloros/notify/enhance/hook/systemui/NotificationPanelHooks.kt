@@ -698,14 +698,11 @@ internal class NotificationPanelHooks(
                 // from the app's monochrome small icon, which is a blank block for SMS. There the
                 // theme icon replaces the whole icon, as before.
                 //
-                // A row with no large icon at all belongs to the same class: the host has nothing to
-                // compose an avatar out of, so the "composition" it caches is the bare app icon in
-                // the (larger) avatar slot — visible as an oversized unthemed icon where every other
-                // row shows a theme icon. It is replaced too.
-                if (
-                    verdict.reason != HostAvatarPresence.REASON_GROUP_SUMMARY &&
-                    verdict.reason != HostAvatarPresence.REASON_NO_LARGE_ICON
-                ) {
+                // A plain row without a large icon stays with the host too: ColorOS can still fill
+                // the slot from its own source (WeChat group messages ship no artwork yet lose
+                // nothing), and only the draw-time guard may take the slot back — and only when the
+                // host's result turns out to be the bare app icon.
+                if (verdict.reason != HostAvatarPresence.REASON_GROUP_SUMMARY) {
                     diagnostics.report(
                         level = DiagnosticLevel.Debug,
                         event = DiagnosticEvent.HostAvatarYield,
@@ -1315,7 +1312,15 @@ internal class NotificationPanelHooks(
             if (plan == null) {
                 // Yielding to the host avatar. ColorOS composes that avatar asynchronously, so the
                 // row would paint the plain small icon first; pre-compose it here instead.
-                if (target == PanelIconTarget.Header) prefillHostAvatar(icon, wrapper, sbn, snapshot)
+                if (target == PanelIconTarget.Header) {
+                    prefillHostAvatar(icon, wrapper, sbn, snapshot)
+                    // WeChat posts a group message with no artwork at all and ColorOS still paints a
+                    // photo for some of those rows — but for others it paints the bare app icon,
+                    // oversized in the avatar slot. Nothing in the notification tells the two apart,
+                    // so the row is watched and the theme icon goes back only once the host's own
+                    // result turns out to be that placeholder.
+                    guardHeaderIconAgainstHostPlaceholder(icon, row, sbn, snapshot)
+                }
                 // An aggregated row that just yielded still has to end up with *something*: when
                 // the host has no photo to compose it paints its own monochrome artwork, and for
                 // SMS that is the blank white bubble that also tints the whole pill white. Watch
@@ -1568,6 +1573,120 @@ internal class NotificationPanelHooks(
         summaryBlankGuards.put(icon, SummaryBlankGuard(icon, row, sbn, snapshot))?.stop()
         summaryBlankGuards[icon]?.start()
         scheduleGroupSummaryRefill(icon, row, sbn, snapshot)
+    }
+
+    /** Header-slot guards that take the icon back from a host app-icon placeholder. */
+    private val headerPlaceholderGuards = java.util.WeakHashMap<ImageView, HeaderPlaceholderGuard>()
+
+    /**
+     * Keeps a row that *may* get a contact photo from the host from being left on the app icon.
+     *
+     * [HostAvatarPresence.evaluate] cannot settle this from metadata: a WeChat group message carries
+     * no large icon, and ColorOS fills the avatar slot from its own source for some of those rows
+     * and with the bare app icon for others. Guessing either way has already produced a bug report —
+     * "the first message after a reboot shows the native icon, oversized" when the module yields,
+     * "WeChat lost the avatar and badge" when it replaces the whole row.
+     *
+     * So the host keeps the first word and the guard only steps in when its result is measurably
+     * *not* a picture: the app's own launcher icon, a flat fill, or the monochrome mask. A real
+     * contact photo — or the host's "photo + badge" composition, whose centre is the photo — stops
+     * the guard for good, so a row that does get its avatar later is never painted over.
+     */
+    private fun guardHeaderIconAgainstHostPlaceholder(
+        icon: ImageView,
+        row: Any?,
+        sbn: StatusBarNotification,
+        snapshot: RuntimeSnapshot,
+    ) {
+        val context = icon.context
+        if (HostAvatarPresence.evaluate(context, sbn).reason != HostAvatarPresence.REASON_NO_LARGE_ICON) {
+            return
+        }
+        val themed = snapshot.resolver.resolveThemeDrawableByPackage(context, sbn.packageName)
+            ?: return
+        headerPlaceholderGuards
+            .put(icon, HeaderPlaceholderGuard(icon, row, sbn, snapshot, themed))
+            ?.stop()
+        headerPlaceholderGuards[icon]?.start()
+    }
+
+    private inner class HeaderPlaceholderGuard(
+        private val icon: ImageView,
+        private val row: Any?,
+        private val sbn: StatusBarNotification,
+        private val snapshot: RuntimeSnapshot,
+        private val themed: Drawable,
+    ) : ViewTreeObserver.OnPreDrawListener, View.OnAttachStateChangeListener {
+
+        private var observer: ViewTreeObserver? = null
+        private var writes = 0
+        private var lastWriteAt = 0L
+        private var stopped = false
+
+        fun start() {
+            observer = icon.viewTreeObserver
+            observer?.addOnPreDrawListener(this)
+            icon.addOnAttachStateChangeListener(this)
+        }
+
+        fun stop() {
+            if (stopped) return
+            stopped = true
+            runCatching { observer?.takeIf { it.isAlive }?.removeOnPreDrawListener(this) }
+            runCatching { icon.removeOnAttachStateChangeListener(this) }
+            if (headerPlaceholderGuards[icon] === this) headerPlaceholderGuards.remove(icon)
+        }
+
+        override fun onPreDraw(): Boolean {
+            if (stopped) return true
+            if (!icon.isAttachedToWindow || !configuration.isCurrent(snapshot)) {
+                stop()
+                return true
+            }
+            val key = runCatching { row?.let { statusBarNotificationFromRow(it) }?.key }.getOrNull()
+            if (key != sbn.key) {
+                stop()
+                return true
+            }
+            val current = icon.drawable ?: return true
+            if (current === themed) return true
+            // Anything else on screen is the host's own content — a contact photo, or the
+            // "photo + badge" composition it built around one. That wins; the guard is done.
+            if (!isHostAppIconPlaceholder(current)) {
+                stop()
+                return true
+            }
+            val now = SystemClock.uptimeMillis()
+            if (writes >= MAX_GROUP_ICON_TAKEOVERS &&
+                now - lastWriteAt < TAKEOVER_QUIET_INTERVAL_MILLIS
+            ) {
+                return true
+            }
+            writes++
+            lastWriteAt = now
+            if (writes == 1) {
+                diagnostics.report(
+                    level = DiagnosticLevel.Info,
+                    event = DiagnosticEvent.HostAvatarReplace,
+                    message = "角标诊断：${sbn.packageName} 宿主的头像位里只有应用图标，改用主题图标",
+                    attributes = mapOf("package" to sbn.packageName, "key" to sbn.key),
+                    occurrence = OccurrencePolicy.Once("header_placeholder_guard:${sbn.key}"),
+                )
+            }
+            icon.clearColorFilter()
+            icon.imageTintList = null
+            icon.setImageDrawable(themed)
+            return true
+        }
+
+        private fun isHostAppIconPlaceholder(drawable: Drawable): Boolean =
+            HostAvatarPresence.looksLikeLauncherIcon(icon.context, sbn.packageName, drawable) ||
+                HostAvatarPresence.looksBlank(drawable) ||
+                HostAvatarPresence.looksLikeMonochromeMask(drawable)
+
+        override fun onViewAttachedToWindow(view: View) = Unit
+
+        override fun onViewDetachedFromWindow(view: View) = stop()
     }
 
     /**

@@ -11,6 +11,7 @@ import android.service.notification.StatusBarNotification
 import android.util.LruCache
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewTreeObserver
 import android.widget.ImageView
 import com.demo1993.coloros.notify.enhance.core.SystemPackages
 import com.demo1993.coloros.notify.enhance.diagnostics.DiagnosticEvent
@@ -675,7 +676,12 @@ internal class NotificationPanelHooks(
             plan.tintColor?.let { tint ->
                 iconView.colorFilter = PorterDuffColorFilter(tint, PorterDuff.Mode.SRC_IN)
             }
-            if (verifyAfterWrite) verifyGroupSummaryIconAfterWrite(iconView, row, sbn, snapshot)
+            if (verifyAfterWrite) {
+                keepGroupSummaryIcon(iconView, row, sbn, snapshot) {
+                    injectGroupSummaryIcon(iconView, row, snapshot, verifyAfterWrite = false)
+                }
+                verifyGroupSummaryIconAfterWrite(iconView, row, sbn, snapshot)
+            }
         } catch (exception: Exception) {
             diagnostics.runtimeFailure(
                 scope = "panel:group_attach_badge",
@@ -1146,6 +1152,18 @@ internal class NotificationPanelHooks(
             // ColorOS 17, so it races the write exactly like the header's async small icon does.
             if (verifyAfterWrite) {
                 verifyIconAfterWrite(icon, wrapper, row, sbn, snapshot, target)
+                if (target == PanelIconTarget.OplusGroupSummary) {
+                    keepGroupSummaryIcon(icon, row, sbn, snapshot) {
+                        applyPanelIcon(
+                            wrapper = wrapper,
+                            rowCandidate = row,
+                            target = target,
+                            expectedSnapshot = snapshot,
+                            allowDeferredLookup = false,
+                            verifyAfterWrite = false,
+                        )
+                    }
+                }
             }
         } catch (exception: Exception) {
             diagnostics.runtimeFailure(
@@ -1216,6 +1234,111 @@ internal class NotificationPanelHooks(
                 )
             }
         }, PANEL_RETRY_DELAY_MILLIS shl pass)
+    }
+
+    /** Guards of the collapsed group rows this hook currently owns, keyed by their icon view. */
+    private val groupIconTakeovers = java.util.WeakHashMap<ImageView, IconTakeover>()
+
+    /**
+     * Keeps a collapsed group row on the module's icon for as long as the row lives, instead of for
+     * the handful of seconds [verifyIconAfterWrite] watches.
+     *
+     * `GroupIconManager` repaints the badge icon from its own coroutine, and that repaint lands
+     * whenever the host gets round to it — on a busy shade it can be well past the last timed pass.
+     * The damage is visible and permanent: the row falls back to the monochrome notification mask
+     * (SMS: a solid white speech bubble) and the host then derives the pill colour from that white
+     * artwork, so the collapsed group ends up as a blank white block next to its count badge.
+     *
+     * A draw-time guard costs one identity compare per frame and re-applies the icon only when the
+     * host actually replaced it, which is why it can outlive the timed ladder at no real cost.
+     */
+    private fun keepGroupSummaryIcon(
+        icon: ImageView,
+        row: Any?,
+        sbn: StatusBarNotification,
+        snapshot: RuntimeSnapshot,
+        reapply: () -> Unit,
+    ) {
+        groupIconTakeovers.put(icon, IconTakeover(icon, row, sbn, snapshot, reapply))?.stop()
+        groupIconTakeovers[icon]?.start()
+    }
+
+    private inner class IconTakeover(
+        private val icon: ImageView,
+        private val row: Any?,
+        private val sbn: StatusBarNotification,
+        private val snapshot: RuntimeSnapshot,
+        private val reapply: () -> Unit,
+    ) : ViewTreeObserver.OnPreDrawListener, View.OnAttachStateChangeListener {
+
+        private var applied: Drawable? = null
+        private var observer: ViewTreeObserver? = null
+        private var reapplies = 0
+        private var stopped = false
+
+        fun start() {
+            applied = icon.drawable
+            observer = icon.viewTreeObserver
+            observer?.addOnPreDrawListener(this)
+            icon.addOnAttachStateChangeListener(this)
+        }
+
+        fun stop() {
+            if (stopped) return
+            stopped = true
+            runCatching { observer?.takeIf { it.isAlive }?.removeOnPreDrawListener(this) }
+            runCatching { icon.removeOnAttachStateChangeListener(this) }
+            if (groupIconTakeovers[icon] === this) groupIconTakeovers.remove(icon)
+        }
+
+        override fun onPreDraw(): Boolean {
+            if (stopped) return true
+            if (!icon.isAttachedToWindow || !configuration.isCurrent(snapshot)) {
+                stop()
+                return true
+            }
+            val key = runCatching { row?.let { statusBarNotificationFromRow(it) }?.key }.getOrNull()
+            if (key != sbn.key) {
+                stop()
+                return true
+            }
+            val expected = applied
+            if (expected == null) {
+                stop()
+                return true
+            }
+            if (icon.drawable === expected) return true
+            if (reapplies >= MAX_GROUP_ICON_TAKEOVERS) {
+                diagnostics.report(
+                    level = DiagnosticLevel.Warning,
+                    event = DiagnosticEvent.IconReapplied,
+                    message = "宿主反复回填原始图标，放弃接管聚合摘要图标",
+                    attributes = mapOf("package" to sbn.packageName, "key" to sbn.key),
+                    occurrence = OccurrencePolicy.Once("panel:group_icon_takeover_giveup:${sbn.key}"),
+                )
+                stop()
+                return true
+            }
+            reapplies++
+            diagnostics.report(
+                level = DiagnosticLevel.Debug,
+                event = DiagnosticEvent.IconReapplied,
+                message = "宿主在绘制前换回了原始图标，补铺聚合摘要图标",
+                attributes = mapOf(
+                    "package" to sbn.packageName,
+                    "key" to sbn.key,
+                    "pass" to reapplies.toString(),
+                ),
+                occurrence = OccurrencePolicy.RateLimited("panel:group_icon_takeover", 60_000L),
+            )
+            reapply()
+            applied = icon.drawable
+            return true
+        }
+
+        override fun onViewAttachedToWindow(view: View) = Unit
+
+        override fun onViewDetachedFromWindow(view: View) = stop()
     }
 
     private fun applyGroupSummaryIcon(iconView: ImageView, entry: Any, snapshot: RuntimeSnapshot) {
@@ -1462,6 +1585,13 @@ internal class NotificationPanelHooks(
          * window `CachingIconView` and the avatar coroutine were observed to land in.
          */
         const val MAX_ICON_VERIFY_PASSES = 4
+
+        /**
+         * How many times the draw-time guard may put the group icon back. The host repaints a
+         * collapsed group a bounded number of times (bind, expand/collapse, theme change), so a
+         * dozen recovers from any of those without risking a fight it can never win.
+         */
+        const val MAX_GROUP_ICON_TAKEOVERS = 12
 
         /**
          * Retry schedule for a row whose sender photo was not attached yet when it was first bound.

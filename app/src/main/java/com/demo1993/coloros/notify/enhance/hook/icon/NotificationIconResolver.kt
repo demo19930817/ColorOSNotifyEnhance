@@ -166,13 +166,24 @@ internal class NotificationIconResolver(
         sbn: StatusBarNotification,
         originalSmallIcon: Icon?,
     ): PanelIconRenderPlan? = resolveOrFallback("panel", "通知面板图标解析失败") {
-        resolvePanelIconPlanBody(context, sbn, originalSmallIcon)
+        // No "keep the original small icon" fallback here. On a collapsed group that fallback is
+        // exactly the bug it looks like: the monochrome notification mask (SMS: a plain white
+        // speech bubble) painted straight into the icon box, with the host then deriving the pill
+        // colour from that white artwork — a blank white squircle next to the count badge. Leaving
+        // the row alone keeps ColorOS' own app icon, which is what the group row should show.
+        resolvePanelIconPlanBody(
+            context = context,
+            sbn = sbn,
+            originalSmallIcon = originalSmallIcon,
+            allowRawSmallIconFallback = false,
+        )
     }
 
     private fun resolvePanelIconPlanBody(
         context: Context,
         sbn: StatusBarNotification,
         originalSmallIcon: Icon?,
+        allowRawSmallIconFallback: Boolean = true,
     ): PanelIconRenderPlan? {
         if (
             !NotificationIconPolicy.shouldProcessPanel(
@@ -204,7 +215,9 @@ internal class NotificationIconResolver(
                 ?.let { return it }
         }
 
-        if (originalCompatibility == NotificationIconMaskCompatibility.Compatible) {
+        if (allowRawSmallIconFallback &&
+            originalCompatibility == NotificationIconMaskCompatibility.Compatible
+        ) {
             return PanelIconRenderPlan(
                 drawable = originalDrawable,
                 tintColor = context.defaultPanelIconTint,

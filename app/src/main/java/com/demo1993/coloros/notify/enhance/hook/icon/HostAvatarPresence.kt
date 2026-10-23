@@ -209,6 +209,13 @@ internal object HostAvatarPresence {
     ): Verdict {
         val avatar = largeIcon.loadDrawable(context)
             ?: return Verdict(renderable = false, reason = "large-icon-undecodable")
+        // A blank canvas is not a photo. ColorOS' aggregated rows (the SMS auto-group, for one) ship
+        // an all-white large icon, and composing "avatar + badge" out of it paints exactly what the
+        // artwork contains: a white squircle. Treat it as "nothing to compose" so the row keeps the
+        // themed icon instead.
+        if (isBlankArtwork(avatar)) {
+            return Verdict(renderable = false, reason = REASON_BLANK_ARTWORK)
+        }
         val appIcon = runCatching {
             context.packageManager.getApplicationIcon(packageName)
         }.getOrNull() ?: return Verdict(renderable = true, reason = "app-icon-unavailable")
@@ -220,6 +227,33 @@ internal object HostAvatarPresence {
             reason = if (placeholder) REASON_LAUNCHER_PLACEHOLDER else REASON_CONTACT_PHOTO,
             difference = difference,
         )
+    }
+
+    /**
+     * True when the artwork carries no picture at all — a solid fill, the shape ColorOS uses as a
+     * placeholder while it has no avatar to draw. Judged on the same centre window the placeholder
+     * comparison uses, on luminance only: any real photo, even a monochrome one, varies far more
+     * than the threshold across that area.
+     */
+    private fun isBlankArtwork(drawable: Drawable): Boolean {
+        val pixels = sample(drawable) ?: return false
+        var min = Double.MAX_VALUE
+        var max = -Double.MAX_VALUE
+        var count = 0
+        for (y in SAMPLE_MARGIN until SAMPLE_SIZE - SAMPLE_MARGIN) {
+            for (x in SAMPLE_MARGIN until SAMPLE_SIZE - SAMPLE_MARGIN) {
+                val pixel = pixels[y * SAMPLE_SIZE + x]
+                if ((pixel ushr 24) < 32) continue
+                val luminance = 0.299 * ((pixel ushr 16) and 0xFF) +
+                    0.587 * ((pixel ushr 8) and 0xFF) +
+                    0.114 * (pixel and 0xFF)
+                if (luminance < min) min = luminance
+                if (luminance > max) max = luminance
+                count++
+            }
+        }
+        if (count == 0) return true
+        return (max - min) < BLANK_ARTWORK_TOLERANCE
     }
 
     /**
@@ -321,6 +355,12 @@ internal object HostAvatarPresence {
     /** Same comparison, but against a drawable the host already composed (padded, rounded). */
     private const val HOSTED_PLACEHOLDER_TOLERANCE = 34.0
 
+    /**
+     * Luminance spread below which the avatar slot is a solid fill instead of a picture. One channel
+     * step or two of JPEG/rounding noise stays well under it; no photo does.
+     */
+    private const val BLANK_ARTWORK_TOLERANCE = 6.0
+
     /** Keyed by notification key + large-icon identity, so a re-post is re-evaluated. */
     private val avatarDecisions = LruCache<String, Verdict>(64)
 
@@ -329,6 +369,9 @@ internal object HostAvatarPresence {
 
     /** [Verdict.reason] meaning the avatar slot holds the app's own icon. */
     const val REASON_LAUNCHER_PLACEHOLDER = "launcher-icon-placeholder"
+
+    /** [Verdict.reason] meaning the avatar slot holds a solid fill with no picture in it. */
+    const val REASON_BLANK_ARTWORK = "blank-artwork"
 
     /** Notification categories ColorOS renders with a per-sender avatar. */
     private val AVATAR_CATEGORIES = setOf(

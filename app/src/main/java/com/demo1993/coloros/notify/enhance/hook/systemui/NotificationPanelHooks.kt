@@ -685,23 +685,12 @@ internal class NotificationPanelHooks(
                         )
                     }
                 }
-                // Everything except a collapsed group summary is handed back to the host untouched.
-                // A single row that simply has not received its photo yet — WeChat posts the message
-                // first and attaches the sender picture a moment later — must keep the stock
-                // "app icon + badge" the host composes for it, because that is what the stock build
-                // shows too. The badge in that composition is already the theme icon (see
-                // [installHostCompositionHook]), so the row reads as "native, themed corner badge"
-                // from the first frame, and it turns into "avatar + themed badge" by itself once the
-                // photo lands instead of waiting for this module to repaint it.
-                //
-                // A collapsed group summary is the one row that never gets a photo: ColorOS paints it
-                // from the app's monochrome small icon, which is a blank block for SMS. There the
-                // theme icon replaces the whole icon, as before.
-                //
-                // A plain row without a large icon stays with the host too: ColorOS can still fill
-                // the slot from its own source (WeChat group messages ship no artwork yet lose
-                // nothing), and only the draw-time guard may take the slot back — and only when the
-                // host's result turns out to be the bare app icon.
+                // A row whose notification carries no large icon never gets a host-composed photo
+                // (every logged contact-photo verdict had a largeIcon; the rows without one had
+                // the host paint the bare app icon), so it belongs to the replacement branch
+                // below and reaches the theme icon on the very first bind. When the sender photo
+                // exists but loads late, WeChat re-posts the notification and the renderable
+                // branch above takes over from that re-bind on.
                 if (verdict.reason != HostAvatarPresence.REASON_GROUP_SUMMARY) {
                     diagnostics.report(
                         level = DiagnosticLevel.Debug,
@@ -1314,11 +1303,11 @@ internal class NotificationPanelHooks(
                 // row would paint the plain small icon first; pre-compose it here instead.
                 if (target == PanelIconTarget.Header) {
                     prefillHostAvatar(icon, wrapper, sbn, snapshot)
-                    // WeChat posts a group message with no artwork at all and ColorOS still paints a
-                    // photo for some of those rows — but for others it paints the bare app icon,
-                    // oversized in the avatar slot. Nothing in the notification tells the two apart,
-                    // so the row is watched and the theme icon goes back only once the host's own
-                    // result turns out to be that placeholder.
+                    // plan is null here only when the theme engine itself failed (a yield would
+                    // have produced a replacement plan for every no-avatar row since 5.4). The
+                    // guard stays as the cold-start net: it resolves the themed icon lazily and
+                    // forces redraws until the engine is warm, then takes the slot from the
+                    // app-icon placeholder the host painted in the meantime.
                     guardHeaderIconAgainstHostPlaceholder(icon, row, sbn, snapshot)
                 }
                 // An aggregated row that just yielded still has to end up with *something*: when
@@ -1579,18 +1568,14 @@ internal class NotificationPanelHooks(
     private val headerPlaceholderGuards = java.util.WeakHashMap<ImageView, HeaderPlaceholderGuard>()
 
     /**
-     * Keeps a row that *may* get a contact photo from the host from being left on the app icon.
+     * Cold-start net for the header avatar slot.
      *
-     * [HostAvatarPresence.evaluate] cannot settle this from metadata: a WeChat group message carries
-     * no large icon, and ColorOS fills the avatar slot from its own source for some of those rows
-     * and with the bare app icon for others. Guessing either way has already produced a bug report —
-     * "the first message after a reboot shows the native icon, oversized" when the module yields,
-     * "WeChat lost the avatar and badge" when it replaces the whole row.
-     *
-     * So the host keeps the first word and the guard only steps in when its result is measurably
-     * *not* a picture: the app's own launcher icon, a flat fill, or the monochrome mask. A real
-     * contact photo — or the host's "photo + badge" composition, whose centre is the photo — stops
-     * the guard for good, so a row that does get its avatar later is never painted over.
+     * Since 5.4 a row without a large icon is replaced deterministically at bind time, so this
+     * guard only runs when the bind itself could not produce a plan — the theme engine was still
+     * cold and the resolver returned nothing. It watches the slot and puts the theme icon over the
+     * app-icon placeholder the host painted in the meantime, forcing redraws until the engine is
+     * warm. A real photo (or the host's "photo + badge" composition, whose centre is the photo)
+     * stops the guard for good, so a row that does get its avatar later is never painted over.
      */
     private fun guardHeaderIconAgainstHostPlaceholder(
         icon: ImageView,
@@ -1602,12 +1587,8 @@ internal class NotificationPanelHooks(
         if (HostAvatarPresence.evaluate(context, sbn).reason != HostAvatarPresence.REASON_NO_LARGE_ICON) {
             return
         }
-        // No themed lookup here on purpose. The theme engine can still be cold right after the
-        // shade opens (the 4.9 blank-sheet window) and return null; giving up on that would leave
-        // the bare app icon on screen for as long as the row goes un-rebound — an old notification
-        // is never re-posted, so "until the next bind" can mean forever. The guard resolves the
-        // themed icon lazily on each draw instead, and [HeaderPlaceholderGuard.start] forces a few
-        // extra draw passes so a cold engine converges without waiting for a rebind.
+        // No themed lookup here on purpose: the engine is cold, that is why this path is running
+        // at all. The guard resolves the themed icon lazily on each draw instead.
         headerPlaceholderGuards
             .put(icon, HeaderPlaceholderGuard(icon, row, sbn, snapshot))
             ?.stop()

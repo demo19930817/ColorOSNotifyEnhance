@@ -135,17 +135,20 @@ internal object HostAvatarPresence {
                 Verdict(mayCompose(sbn), "no-context")
             }
         }
-        // No large icon at all is *not* proof that the host has no avatar to paint: WeChat posts
-        // group messages without any artwork, yet ColorOS still fills the slot from its own source
-        // for some of them. Answering "no avatar" here replaced those rows with the theme icon and
-        // lost the avatar, so the metadata answer stays. The row is then watched at draw time
-        // instead (see `guardHeaderIconAgainstHostPlaceholder`) and the theme icon goes back only
-        // when the host's own result really is the bare app icon.
+        // No large icon means no avatar, full stop — answered from every log session so far:
+        // every row that ever showed a host-composed photo (difference 80–100 against the
+        // launcher icon) carried a largeIcon, and both rows observed *without* one (the WeChat
+        // group mention and the 服务号 push) had the host paint the bare app icon, never a
+        // picture. Trusting the message category here (the 5.2/5.3 yield) traded a deterministic
+        // theme icon for a coin flip the guard then had to repair at draw time. A photo that
+        // genuinely arrives later comes with a re-post — WeChat re-posts the notification once
+        // the sender picture loads — and the re-post is judged afresh with the large icon
+        // present, so the row still turns into "avatar + badge" on its own.
         val largeIcon = largeIconOf(notification, extras)
             ?: return if (summary) {
                 Verdict(renderable = false, reason = REASON_GROUP_SUMMARY)
             } else {
-                Verdict(mayCompose(sbn), REASON_NO_LARGE_ICON)
+                Verdict(renderable = false, reason = REASON_NO_LARGE_ICON)
             }
         val cacheKey = sbn.key + "#" + System.identityHashCode(largeIcon)
         avatarDecisions.get(cacheKey)?.let { return it.forRowType(summary) }

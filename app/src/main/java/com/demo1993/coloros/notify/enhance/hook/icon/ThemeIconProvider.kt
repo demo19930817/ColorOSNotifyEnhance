@@ -140,6 +140,7 @@ internal class ThemeIconProvider(
     ): Bitmap? {
         val first = loadThemeBitmapOnce(context, packageName, user, userId) ?: return null
         if (!isBlankArtworkSheet(first)) return first
+        val firstSpread = artworkSpreadOf(first)
         val retried = loadThemeBitmapOnce(context, packageName, user, userId)
         if (retried != null && !isBlankArtworkSheet(retried)) return retried
         diagnostics.report(
@@ -149,10 +150,41 @@ internal class ThemeIconProvider(
             attributes = mapOf(
                 "package" to packageName,
                 "retried" to (retried != null).toString(),
+                "spread" to firstSpread.first.toString(),
+                "mean" to firstSpread.second.toString(),
             ),
             occurrence = OccurrencePolicy.RateLimited("theme_icon:blank:$packageName", 300_000L),
         )
         return null
+    }
+
+    /** Diagnostics companion to [isBlankArtworkSheet]: the measured spread and mean luminance. */
+    private fun artworkSpreadOf(bitmap: Bitmap): Pair<Double, Double> {
+        val step = (minOf(bitmap.width, bitmap.height) / BLANK_SAMPLE_GRID).coerceAtLeast(1)
+        var min = Double.MAX_VALUE
+        var max = -Double.MAX_VALUE
+        var total = 0.0
+        var count = 0
+        var y = 0
+        while (y < bitmap.height) {
+            var x = 0
+            while (x < bitmap.width) {
+                val pixel = bitmap.getPixel(x, y)
+                if ((pixel ushr 24) >= BLANK_OPAQUE_ALPHA) {
+                    val luminance = 0.299 * ((pixel ushr 16) and 0xFF) +
+                        0.587 * ((pixel ushr 8) and 0xFF) +
+                        0.114 * (pixel and 0xFF)
+                    if (luminance < min) min = luminance
+                    if (luminance > max) max = luminance
+                    total += luminance
+                    count++
+                }
+                x += step
+            }
+            y += step
+        }
+        if (count == 0) return Pair(Double.MAX_VALUE, -1.0)
+        return Pair(max - min, total / count)
     }
 
     private fun loadThemeBitmapOnce(
@@ -213,8 +245,15 @@ internal class ThemeIconProvider(
         if (count == 0) return true
         val mean = total / count
         val spread = max - min
-        // Only a sheet that is *white* and flat counts. A vividly coloured flat icon (a solid logo
-        // plate) or a dark one passes, so no real theme icon is dropped by this check.
+        // A near-white low-contrast sheet counts too. The engine's half-loaded state is not always
+        // a perfectly flat white: sheets with a faint tint or a pale outline (spread up to ~48,
+        // mean 216..225) used to slip past the old 8/225 test, got written by the panel guards as
+        // faithfully as a good icon, and the aggregate row then stayed a blank squircle no matter
+        // how many repairs fired — the theme icon only ever swaps by *reference*, so a guard cannot
+        // notice that its own expected drawable draws as a blank. Real desktop theme icons are
+        // colourful or dark by construction; anything this pale and this flat is a sheet in
+        // disguise. Refused results are never cached, so the retry ladder picks the real artwork
+        // up once the engine is warm.
         return spread < BLANK_SPREAD_TOLERANCE && mean > BLANK_WHITE_LUMINANCE
     }
 
@@ -586,9 +625,9 @@ internal class ThemeIconProvider(
         const val BLANK_OPAQUE_ALPHA = 32
 
         /** Luminance spread below which the artwork is one flat fill instead of a picture. */
-        const val BLANK_SPREAD_TOLERANCE = 8.0
+        const val BLANK_SPREAD_TOLERANCE = 48.0
 
         /** Mean luminance above which that flat fill is white, i.e. the failure this check targets. */
-        const val BLANK_WHITE_LUMINANCE = 225.0
+        const val BLANK_WHITE_LUMINANCE = 216.0
     }
 }

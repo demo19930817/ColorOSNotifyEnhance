@@ -1368,16 +1368,29 @@ internal class NotificationPanelHooks(
      * 头像". Composing the same picture synchronously here fills that window: the host result that
      * arrives a frame or two later is the same visuals, so nothing jumps. Failures (missing helper,
      * no avatar, unknown size) simply leave the host's own first frame in place.
+     *
+     * @return whether an avatar frame was actually painted. `false` means the row is currently
+     * showing whatever the host painted, and the retry ladder owns it from here.
      */
     private fun prefillHostAvatar(
         icon: ImageView,
         wrapper: Any,
         sbn: StatusBarNotification,
         snapshot: RuntimeSnapshot,
-    ) {
+    ): Boolean {
         try {
             val size = headerContentSizePx(wrapper, icon)
-            if (size <= 0) return
+            if (size <= 0) {
+                diagnostics.report(
+                    level = DiagnosticLevel.Warning,
+                    event = DiagnosticEvent.HostAvatarPrefill,
+                    message = "头像合成尺寸未知，跳过预铺，稍后补铺",
+                    attributes = mapOf("package" to sbn.packageName, "key" to sbn.key),
+                    occurrence = OccurrencePolicy.Once("panel:prefill_no_size:${sbn.key}"),
+                )
+                scheduleAvatarRefill(icon, wrapper, sbn, snapshot, 0)
+                return false
+            }
             // Aggregated rows ("[2条] …") are summaries, and ColorOS never composes an avatar for
             // them — but WeChat/WeCom service accounts still ship their own picture there. Compose
             // it here for those rows as well, otherwise the row keeps the app icon for as long as
@@ -1410,7 +1423,7 @@ internal class NotificationPanelHooks(
                     occurrence = OccurrencePolicy.Once("panel:prefill_deferred:${sbn.key}"),
                 )
                 scheduleAvatarRefill(icon, wrapper, sbn, snapshot, 0)
-                return
+                return false
             }
             lastHeaderContentSizePx = size
             icon.setImageDrawable(drawable)
@@ -1429,6 +1442,7 @@ internal class NotificationPanelHooks(
                 ),
                 occurrence = OccurrencePolicy.Once("panel:host_avatar_prefill:${sbn.packageName}"),
             )
+            return true
         } catch (exception: Exception) {
             diagnostics.runtimeFailure(
                 scope = "panel:host_avatar_prefill",
@@ -1436,6 +1450,7 @@ internal class NotificationPanelHooks(
                 cause = exception,
                 revision = snapshot.revision,
             )
+            return false
         }
     }
 
@@ -1444,6 +1459,10 @@ internal class NotificationPanelHooks(
      * the host painted on the first frame is replaced as soon as the picture exists instead of
      * whenever the host's own coroutine happens to finish. Stops as soon as one attempt succeeds,
      * when the row is detached, or when the configuration changed underneath.
+     *
+     * When every attempt finds nothing to compose, the row is [applyAvatarFallback] — the yield was
+     * a bet on the host delivering a photo, and a bet that never pays off must not cost the row its
+     * themed icon for good.
      */
     private fun scheduleAvatarRefill(
         icon: ImageView,
@@ -1452,12 +1471,19 @@ internal class NotificationPanelHooks(
         snapshot: RuntimeSnapshot,
         attempt: Int,
     ) {
-        if (attempt >= AVATAR_REFILL_DELAYS_MILLIS.size) return
+        if (attempt >= AVATAR_REFILL_DELAYS_MILLIS.size) {
+            applyAvatarFallback(icon, wrapper, sbn, snapshot)
+            return
+        }
         icon.postDelayed({
             try {
                 if (!configuration.isCurrent(snapshot)) return@postDelayed
                 if (!icon.isAttachedToWindow) return@postDelayed
-                val size = headerContentSizePx(wrapper, icon).takeIf { it > 0 } ?: return@postDelayed
+                val size = headerContentSizePx(wrapper, icon)
+                if (size <= 0) {
+                    scheduleAvatarRefill(icon, wrapper, sbn, snapshot, attempt + 1)
+                    return@postDelayed
+                }
                 val summary = HostAvatarPresence.isGroupSummary(sbn)
                 val drawable = snapshot.resolver.composeHostAvatarPreview(
                     context = icon.context,
@@ -1490,14 +1516,90 @@ internal class NotificationPanelHooks(
     }
 
     /**
+     * Takes back a row the module yielded to the host avatar system, when no avatar ever showed up.
+     *
+     * The yield is decided from what the notification carries *right now*, and WeChat posts the
+     * message before the sender photo is attached. Until now the row was simply left with whatever
+     * the host painted for that avatar-less state — its own "app icon + badge" composition, which
+     * reads as "the icon reverted to the native one" — and it stayed that way until the row was
+     * rebound (expanding the aggregate, scrolling it out and back). Yield, then verify: once the
+     * ladder is exhausted and the artwork is still missing, resolve the row as a normal row so the
+     * configured icon source applies again. A photo that lands later still wins: the host's own
+     * composition, or a later [prefillHostAvatar] on the next content update, overwrites this.
+     */
+    private fun applyAvatarFallback(
+        icon: ImageView,
+        wrapper: Any,
+        sbn: StatusBarNotification,
+        snapshot: RuntimeSnapshot,
+    ) {
+        try {
+            if (!configuration.isCurrent(snapshot) || !icon.isAttachedToWindow) return
+            if (!snapshot.config.panelIconReplacementEnabled) return
+            if (statusBarNotificationOfWrapper(wrapper)?.key != sbn.key) return
+            val summary = HostAvatarPresence.isGroupSummary(sbn)
+            val verdict = HostAvatarPresence.evaluate(icon.context, sbn, summary)
+            if (verdict.renderable) return
+            // Only take over a row that is visibly back on the app icon. ColorOS can paint a contact
+            // photo for a package out of its own store without the notification carrying one, and
+            // replacing that would be the 3.5.9 "avatar disappeared" regression — so anything that
+            // does not pixel-match the launcher icon is left alone.
+            val current = icon.drawable ?: return
+            if (!HostAvatarPresence.looksLikeLauncherIcon(icon.context, sbn.packageName, current)) return
+            val plan = snapshot.resolver.resolvePanelIconPlan(
+                context = icon.context,
+                sbn = sbn,
+                originalSmallIcon = sbn.originalSmallIcon(diagnostics, snapshot.revision),
+                ignoreHostAvatar = true,
+            ) ?: return
+            icon.applyRenderPlan(plan, PanelIconTarget.Header)
+            icon.drawable?.let { drawable -> headerIconClaims.claim(icon, sbn.key, drawable) }
+            diagnostics.report(
+                level = DiagnosticLevel.Info,
+                event = DiagnosticEvent.HostAvatarReplace,
+                message = "等待头像超时（${verdict.reason}），改回模块图标，避免整行停在应用图标",
+                attributes = mapOf(
+                    "package" to sbn.packageName,
+                    "key" to sbn.key,
+                    "verdict" to verdict.reason,
+                ),
+                occurrence = OccurrencePolicy.Once("panel:avatar_fallback:${sbn.key}"),
+            )
+            // The host rewrites the row icon from its own coroutine as well; keep the same guard
+            // the normal replacement path uses so the themed icon survives that repaint.
+            val row = runCatching { members.notificationViewWrapperRow.get(wrapper) }.getOrNull()
+            if (row != null) verifyIconAfterWrite(icon, wrapper, row, sbn, snapshot, PanelIconTarget.Header)
+        } catch (exception: Exception) {
+            diagnostics.runtimeFailure(
+                scope = "panel:avatar_fallback",
+                message = "头像超时后改回模块图标失败",
+                cause = exception,
+                revision = snapshot.revision,
+            )
+        }
+    }
+
+    /**
      * `resolveHeaderIconContentSizePx()` is the very value the host boxes into its composer; the
      * laid-out width is only a fallback for builds that renamed it.
+     *
+     * A freshly bound row is not measured yet, so both can come back as zero — and a zero size used
+     * to abort the avatar prefill silently, which is why the whole session can log yields and not a
+     * single prefill: the row then keeps the host's "app icon + badge" composition until it is
+     * recycled or the group is expanded. Fall back to the size the last composition used, and then
+     * to the density-derived default, so the composer always has a box to draw into.
      */
     private fun headerContentSizePx(wrapper: Any, icon: ImageView): Int {
         resolveContentSizeMethod(wrapper)?.let { method ->
-            runCatching { method.invoke(wrapper) as Int }.getOrNull()?.let { return it }
+            runCatching { method.invoke(wrapper) as Int }.getOrNull()
+                ?.takeIf { it > 0 }
+                ?.let { return it }
         }
-        return icon.width
+        return when {
+            icon.width > 0 -> icon.width
+            lastHeaderContentSizePx > 0 -> lastHeaderContentSizePx
+            else -> (icon.resources.displayMetrics.density * FALLBACK_CONTENT_SIZE_DP).toInt()
+        }
     }
 
     private fun resolveContentSizeMethod(wrapper: Any): Method? {
@@ -1600,5 +1702,11 @@ internal class NotificationPanelHooks(
          * for the next one.
          */
         val AVATAR_REFILL_DELAYS_MILLIS = longArrayOf(180L, 320L, 600L, 1200L)
+
+        /**
+         * Header icon box used when neither the host's own resolver nor the layout has an answer —
+         * 40dp is the size the ColorOS 17 headers compose their avatars into at every density.
+         */
+        const val FALLBACK_CONTENT_SIZE_DP = 40f
     }
 }

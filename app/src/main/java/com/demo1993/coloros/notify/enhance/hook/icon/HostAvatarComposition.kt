@@ -38,6 +38,12 @@ internal object HostAvatarComposition {
         null
     }
 
+    /**
+     * The host's own composer, for hooking. Resolved through the same cache as [compose] so both
+     * paths always agree on the signature.
+     */
+    fun method(context: Context): Method? = resolve(context)
+
     private fun resolve(context: Context): Method? {
         helper?.let { return it }
         return try {

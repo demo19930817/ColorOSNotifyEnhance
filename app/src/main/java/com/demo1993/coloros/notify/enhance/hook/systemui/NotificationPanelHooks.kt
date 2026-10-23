@@ -19,6 +19,7 @@ import com.demo1993.coloros.notify.enhance.diagnostics.DiagnosticLevel
 import com.demo1993.coloros.notify.enhance.diagnostics.Diagnostics
 import com.demo1993.coloros.notify.enhance.diagnostics.OccurrencePolicy
 import com.demo1993.coloros.notify.enhance.hook.HookRegistrar
+import com.demo1993.coloros.notify.enhance.hook.icon.HostAvatarComposition
 import com.demo1993.coloros.notify.enhance.hook.icon.HostAvatarPresence
 import com.demo1993.coloros.notify.enhance.hook.icon.NotificationIconResolver
 import com.demo1993.coloros.notify.enhance.hook.runtimeFailure
@@ -65,6 +66,7 @@ internal class NotificationPanelHooks(
 
     fun install() {
         installOplusHeaderHooks()
+        installHostCompositionHook()
         installGroupIconManagerHooks()
         installPackageIconResolverHooks()
         installPackageIconByNameHooks()
@@ -313,6 +315,56 @@ internal class NotificationPanelHooks(
     }
 
     /**
+     * ColorOS composes "contact photo + app-icon badge" in exactly two places, and both go through
+     * the same helper: `LayerDrawableWithAppIconKt.createBackgroundWithAppIcon(context, origin,
+     * badge, packageName, contentSizePx)` — called from `getIconWithBadge` and from
+     * `scheduleApplyIconWithBadge`.
+     *
+     * Swapping the **badge** argument for the configured theme icon is therefore the whole fix for
+     * "the row shows the theme icon instead of the avatar". The host draws, rounds, caches and
+     * re-applies a picture that was correct when it was made; the module never has to replace a
+     * finished composition, and the row keeps the stock layout — a contact photo with a small
+     * corner badge. When the photo has not arrived yet the same call produces "app icon + themed
+     * badge", which is also what the stock build shows at that moment.
+     */
+    private fun installHostCompositionHook() {
+        val context = systemUiContext() ?: run {
+            diagnostics.memberMissing(
+                scope = "panel:compose_with_app_icon",
+                message = "取不到 SystemUI Context，头像+角标合成钩子未安装",
+            )
+            return
+        }
+        val method = HostAvatarComposition.method(context) ?: run {
+            diagnostics.memberMissing(
+                scope = "panel:compose_with_app_icon",
+                message = "未找到 createBackgroundWithAppIcon(...)，头像+角标合成钩子未安装",
+            )
+            return
+        }
+        hooks.install(method, "systemui.panel.composeWithAppIcon") { chain ->
+            val snapshot = configuration.snapshot
+            if (!snapshot.config.panelIconReplacementEnabled) return@install chain.proceed()
+            if (!snapshot.resolver.panelThemeIconsEnabled()) return@install chain.proceed()
+            // (Context, origin: Drawable, badge: Drawable, packageName: String, contentSizePx: Int)
+            val args = chain.args
+            val hostContext = args.getOrNull(0) as? Context ?: return@install chain.proceed()
+            if (args.getOrNull(2) !is Drawable) return@install chain.proceed()
+            val packageName = args.getOrNull(3) as? String ?: return@install chain.proceed()
+            val themed = snapshot.resolver.resolveThemeDrawableByPackage(hostContext, packageName)
+                ?: return@install chain.proceed()
+            diagnostics.report(
+                level = DiagnosticLevel.Debug,
+                event = DiagnosticEvent.PackageIconResolved,
+                message = "角标诊断：$packageName 宿主合成头像时角标用主题图标",
+                attributes = mapOf("package" to packageName),
+                occurrence = OccurrencePolicy.Once("compose_badge:$packageName"),
+            )
+            chain.proceed(args.toTypedArray().also { it[2] = themed })
+        }
+    }
+
+    /**
      * With "hide notification content" on, the lock-screen hero asks for the app icon **by package**
      * (`getPackageIcon`) instead of through the notification-scoped entry above. That is why the
      * capsule at the bottom was already themed while the notification above it still showed the
@@ -556,6 +608,32 @@ internal class NotificationPanelHooks(
                             occurrence = OccurrencePolicy.Once("header_badge_summary_plain:${rowSbn.key}"),
                         )
                     }
+                }
+                // Everything except a collapsed group summary is handed back to the host untouched.
+                // A single row that simply has not received its photo yet — WeChat posts the message
+                // first and attaches the sender picture a moment later — must keep the stock
+                // "app icon + badge" the host composes for it, because that is what the stock build
+                // shows too. The badge in that composition is already the theme icon (see
+                // [installHostCompositionHook]), so the row reads as "native, themed corner badge"
+                // from the first frame, and it turns into "avatar + themed badge" by itself once the
+                // photo lands instead of waiting for this module to repaint it.
+                //
+                // A collapsed group summary is the one row that never gets a photo: ColorOS paints it
+                // from the app's monochrome small icon, which is a blank block for SMS. There the
+                // theme icon replaces the whole icon, as before.
+                if (verdict.reason != HostAvatarPresence.REASON_GROUP_SUMMARY) {
+                    diagnostics.report(
+                        level = DiagnosticLevel.Debug,
+                        event = DiagnosticEvent.HostAvatarYield,
+                        message = "角标诊断：$packageName 暂无头像（${verdict.reason}），保持原生图标+主题角标",
+                        attributes = mapOf(
+                            "package" to packageName,
+                            "key" to rowSbn.key,
+                            "verdict" to verdict.reason,
+                        ),
+                        occurrence = OccurrencePolicy.Once("header_badge_native:${rowSbn.key}"),
+                    )
+                    return@install chain.proceed()
                 }
                 // The avatar slot holds the app's own icon (or the row has no avatar at all, e.g.
                 // a group summary or an ongoing "视频通话中"): the host would compose "app icon +

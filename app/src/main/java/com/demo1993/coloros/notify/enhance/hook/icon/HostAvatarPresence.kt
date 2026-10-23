@@ -121,7 +121,7 @@ internal object HostAvatarPresence {
     ): Verdict {
         if (sbn == null) return Verdict(renderable = true, reason = "no-notification")
         val summary = isGroupSummary(sbn)
-        if (summary && !allowGroupSummaryAvatar) return Verdict(renderable = false, reason = "group-summary")
+        if (summary && !allowGroupSummaryAvatar) return Verdict(renderable = false, reason = REASON_GROUP_SUMMARY)
         val notification = sbn.notification ?: return Verdict(renderable = true, reason = "no-notification")
         val extras = notification.extras
         if (!summary) {
@@ -130,7 +130,7 @@ internal object HostAvatarPresence {
         }
         if (context == null) {
             return if (summary) {
-                Verdict(renderable = false, reason = "group-summary")
+                Verdict(renderable = false, reason = REASON_GROUP_SUMMARY)
             } else {
                 Verdict(mayCompose(sbn), "no-context")
             }
@@ -140,7 +140,7 @@ internal object HostAvatarPresence {
         // those rows is the 3.5.9 "avatar disappeared" regression.
         val largeIcon = largeIconOf(notification, extras)
             ?: return if (summary) {
-                Verdict(renderable = false, reason = "group-summary")
+                Verdict(renderable = false, reason = REASON_GROUP_SUMMARY)
             } else {
                 Verdict(mayCompose(sbn), "no-large-icon")
             }
@@ -149,7 +149,7 @@ internal object HostAvatarPresence {
         val verdict = runCatching { judge(context, sbn.packageName, largeIcon) }
             .getOrElse {
                 if (summary) {
-                    Verdict(renderable = false, reason = "group-summary")
+                    Verdict(renderable = false, reason = REASON_GROUP_SUMMARY)
                 } else {
                     Verdict(mayCompose(sbn), "probe-failed:${it.javaClass.simpleName}")
                 }
@@ -164,7 +164,7 @@ internal object HostAvatarPresence {
      * aggregated row is exactly that. Only a real photo is allowed through.
      */
     private fun Verdict.forRowType(summary: Boolean): Verdict =
-        if (summary && !renderable) copy(reason = "group-summary") else this
+        if (summary && !renderable) copy(reason = REASON_GROUP_SUMMARY) else this
 
     /**
      * Whether a drawable the host already composed is, visually, just the app's own launcher icon.
@@ -363,6 +363,9 @@ internal object HostAvatarPresence {
 
     /** Keyed by notification key + large-icon identity, so a re-post is re-evaluated. */
     private val avatarDecisions = LruCache<String, Verdict>(64)
+
+    /** [Verdict.reason] meaning the row is a collapsed group summary with no photo of its own. */
+    const val REASON_GROUP_SUMMARY = "group-summary"
 
     /** [Verdict.reason] meaning the avatar slot really holds a sender photo. */
     const val REASON_CONTACT_PHOTO = "contact-photo"

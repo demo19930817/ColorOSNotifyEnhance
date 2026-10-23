@@ -41,10 +41,9 @@
 
 ## 更新
 
-App 内「关于 → 检查更新」读取本仓库的 Releases。当前版本号形如 `4.0`，若 tag 带 `-cn` 这类后缀，版本比较时会自动忽略。
+App 内「关于 → 检查更新」读取本仓库的 Releases。
 
-规则图标单独同步：首页「更新规则」按钮拉取 [ANIP](https://github.com/BetterAndroid/android-notification-icon-project)
-的清单，无后台自动同步；补充规则应向 ANIP 提交。
+规则图标单独同步：首页「更新规则」按钮拉取ANIP清单，无后台自动同步；补充规则应向 ANIP 提交。
 
 ## 注意事项
 

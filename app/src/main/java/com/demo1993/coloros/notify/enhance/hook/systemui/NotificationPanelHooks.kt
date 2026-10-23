@@ -828,7 +828,7 @@ internal class NotificationPanelHooks(
                 keepGroupSummaryIcon(iconView, row, sbn, snapshot) {
                     writeGroupSummaryPlan(iconView, plan)
                 }
-                verifyGroupSummaryIconAfterWrite(iconView, row, sbn, snapshot)
+                verifyGroupSummaryIconAfterWrite(iconView, row, sbn, snapshot, plan = plan)
             }
         } catch (exception: Exception) {
             diagnostics.runtimeFailure(
@@ -860,6 +860,7 @@ internal class NotificationPanelHooks(
         sbn: StatusBarNotification,
         snapshot: RuntimeSnapshot,
         pass: Int = 0,
+        plan: NotificationIconResolver.PanelIconRenderPlan? = null,
     ) {
         if (pass >= MAX_ICON_VERIFY_PASSES) return
         val written = iconView.drawable ?: return
@@ -868,7 +869,7 @@ internal class NotificationPanelHooks(
                 if (!configuration.isCurrent(snapshot) || !iconView.isAttachedToWindow) return@postDelayed
                 if (statusBarNotificationFromRow(row)?.key != sbn.key) return@postDelayed
                 if (iconView.drawable === written) {
-                    verifyGroupSummaryIconAfterWrite(iconView, row, sbn, snapshot, pass + 1)
+                    verifyGroupSummaryIconAfterWrite(iconView, row, sbn, snapshot, pass + 1, plan)
                     return@postDelayed
                 }
                 diagnostics.report(
@@ -878,8 +879,16 @@ internal class NotificationPanelHooks(
                     attributes = mapOf("package" to sbn.packageName, "key" to sbn.key),
                     occurrence = OccurrencePolicy.RateLimited("panel:group_icon_reapply", 60_000L),
                 )
-                injectGroupSummaryIcon(iconView, row, snapshot, verifyAfterWrite = false)
-                verifyGroupSummaryIconAfterWrite(iconView, row, sbn, snapshot, pass + 1)
+                if (plan != null) {
+                    // Re-write the plan resolved at bind time. Re-resolving here reintroduces the
+                    // bug the takeover guard exists for: the row's verdict can flip while it lives,
+                    // the resolver then answers null, the rewrite silently does nothing — and with
+                    // verifyAfterWrite short-circuited nothing re-arms the guard chain afterwards.
+                    writeGroupSummaryPlan(iconView, plan)
+                } else {
+                    injectGroupSummaryIcon(iconView, row, snapshot, verifyAfterWrite = false)
+                }
+                verifyGroupSummaryIconAfterWrite(iconView, row, sbn, snapshot, pass + 1, plan)
             } catch (exception: Exception) {
                 diagnostics.runtimeFailure(
                     scope = "panel:group_icon_reapply",
@@ -1328,7 +1337,15 @@ internal class NotificationPanelHooks(
             // The collapsed group summary is repainted by GroupIconManager's own coroutine on
             // ColorOS 17, so it races the write exactly like the header's async small icon does.
             if (verifyAfterWrite) {
-                verifyIconAfterWrite(icon, wrapper, row, sbn, snapshot, target)
+                verifyIconAfterWrite(
+                    icon = icon,
+                    wrapper = wrapper,
+                    row = row,
+                    sbn = sbn,
+                    snapshot = snapshot,
+                    target = target,
+                    reapplyPlan = if (target == PanelIconTarget.OplusGroupSummary) plan else null,
+                )
                 if (target == PanelIconTarget.OplusGroupSummary) {
                     keepGroupSummaryIcon(icon, row, sbn, snapshot) {
                         // Re-write the plan resolved above instead of re-running [applyPanelIcon].
@@ -1371,6 +1388,7 @@ internal class NotificationPanelHooks(
         snapshot: RuntimeSnapshot,
         target: PanelIconTarget,
         pass: Int = 0,
+        reapplyPlan: NotificationIconResolver.PanelIconRenderPlan? = null,
     ) {
         if (pass >= MAX_ICON_VERIFY_PASSES) return
         val written = icon.drawable ?: return
@@ -1380,7 +1398,7 @@ internal class NotificationPanelHooks(
                 if (!configuration.isCurrent(snapshot) || !icon.isAttachedToWindow) return@postDelayed
                 if (statusBarNotificationFromRow(row)?.key != sbn.key) return@postDelayed
                 if (icon.drawable === written) {
-                    verifyIconAfterWrite(icon, wrapper, row, sbn, snapshot, target, pass + 1)
+                    verifyIconAfterWrite(icon, wrapper, row, sbn, snapshot, target, pass + 1, reapplyPlan)
                     return@postDelayed
                 }
                 diagnostics.report(
@@ -1390,15 +1408,22 @@ internal class NotificationPanelHooks(
                     attributes = mapOf("package" to sbn.packageName, "key" to sbn.key),
                     occurrence = OccurrencePolicy.RateLimited("panel:icon_reapply", 60_000L),
                 )
-                applyPanelIcon(
-                    wrapper = wrapper,
-                    rowCandidate = row,
-                    target = target,
-                    expectedSnapshot = snapshot,
-                    allowDeferredLookup = false,
-                    verifyAfterWrite = false,
-                )
-                verifyIconAfterWrite(icon, wrapper, row, sbn, snapshot, target, pass + 1)
+                if (reapplyPlan != null) {
+                    // The collapsed-group summary rewrites the bind-time plan for the same reason
+                    // [keepGroupSummaryIcon]'s closure does: a re-resolve can flip to null mid-life
+                    // and leave the host's own (for SMS, blank white) result on screen.
+                    icon.applyRenderPlan(reapplyPlan, target)
+                } else {
+                    applyPanelIcon(
+                        wrapper = wrapper,
+                        rowCandidate = row,
+                        target = target,
+                        expectedSnapshot = snapshot,
+                        allowDeferredLookup = false,
+                        verifyAfterWrite = false,
+                    )
+                }
+                verifyIconAfterWrite(icon, wrapper, row, sbn, snapshot, target, pass + 1, reapplyPlan)
             } catch (exception: Exception) {
                 diagnostics.runtimeFailure(
                     scope = "panel:icon_reapply",
@@ -1525,9 +1550,24 @@ internal class NotificationPanelHooks(
             return true
         }
 
-        override fun onViewAttachedToWindow(view: View) = Unit
+        override fun onViewAttachedToWindow(view: View) {
+            if (stopped) return
+            // Rows are detached and re-attached whenever the shade re-lays itself out (collapse,
+            // expand, reorder). Detach removed the draw listener; without re-attaching it here the
+            // guard is gone for good while the row keeps living — the host then paints its cached
+            // composition (for SMS the blank white sheet) and nothing ever takes the slot back.
+            // The re-attach itself is also the first suspicious frame: check the artwork right away.
+            observer = icon.viewTreeObserver.also { it.addOnPreDrawListener(this) }
+            if (icon.drawable !== applied) onPreDraw()
+        }
 
-        override fun onViewDetachedFromWindow(view: View) = stop()
+        override fun onViewDetachedFromWindow(view: View) {
+            // Keep the guard alive: a row detaches on every shade re-layout, and a guard that
+            // dies here never comes back. Only remove the draw listener; stop() stays reserved
+            // for the real exits (key swap, config swap, replacement by a newer guard).
+            runCatching { observer?.takeIf { it.isAlive }?.removeOnPreDrawListener(this) }
+            observer = null
+        }
     }
 
     /** Blank-sheet repairs currently watching a collapsed group row, keyed by its icon view. */
@@ -1700,9 +1740,17 @@ internal class NotificationPanelHooks(
                 HostAvatarPresence.looksBlank(drawable) ||
                 HostAvatarPresence.looksLikeMonochromeMask(drawable)
 
-        override fun onViewAttachedToWindow(view: View) = Unit
+        override fun onViewAttachedToWindow(view: View) {
+            if (stopped) return
+            observer = icon.viewTreeObserver.also { it.addOnPreDrawListener(this) }
+            onPreDraw()
+        }
 
-        override fun onViewDetachedFromWindow(view: View) = stop()
+        override fun onViewDetachedFromWindow(view: View) {
+            // Same policy as IconTakeover: survive shade re-layouts, re-arm on the next attach.
+            runCatching { observer?.takeIf { it.isAlive }?.removeOnPreDrawListener(this) }
+            observer = null
+        }
     }
 
     /**
@@ -1833,9 +1881,18 @@ internal class NotificationPanelHooks(
             return true
         }
 
-        override fun onViewAttachedToWindow(view: View) = Unit
+        override fun onViewAttachedToWindow(view: View) {
+            if (stopped) return
+            observer = icon.viewTreeObserver.also { it.addOnPreDrawListener(this) }
+            if (icon.drawable !== written) onPreDraw()
+        }
 
-        override fun onViewDetachedFromWindow(view: View) = stop()
+        override fun onViewDetachedFromWindow(view: View) {
+            // Same policy as IconTakeover: shade re-layouts detach rows constantly; the guard
+            // must survive them and re-arm on the next attach.
+            runCatching { observer?.takeIf { it.isAlive }?.removeOnPreDrawListener(this) }
+            observer = null
+        }
     }
 
     private fun applyGroupSummaryIcon(iconView: ImageView, entry: Any, snapshot: RuntimeSnapshot) {

@@ -1602,10 +1602,14 @@ internal class NotificationPanelHooks(
         if (HostAvatarPresence.evaluate(context, sbn).reason != HostAvatarPresence.REASON_NO_LARGE_ICON) {
             return
         }
-        val themed = snapshot.resolver.resolveThemeDrawableByPackage(context, sbn.packageName)
-            ?: return
+        // No themed lookup here on purpose. The theme engine can still be cold right after the
+        // shade opens (the 4.9 blank-sheet window) and return null; giving up on that would leave
+        // the bare app icon on screen for as long as the row goes un-rebound — an old notification
+        // is never re-posted, so "until the next bind" can mean forever. The guard resolves the
+        // themed icon lazily on each draw instead, and [HeaderPlaceholderGuard.start] forces a few
+        // extra draw passes so a cold engine converges without waiting for a rebind.
         headerPlaceholderGuards
-            .put(icon, HeaderPlaceholderGuard(icon, row, sbn, snapshot, themed))
+            .put(icon, HeaderPlaceholderGuard(icon, row, sbn, snapshot))
             ?.stop()
         headerPlaceholderGuards[icon]?.start()
     }
@@ -1615,7 +1619,6 @@ internal class NotificationPanelHooks(
         private val row: Any?,
         private val sbn: StatusBarNotification,
         private val snapshot: RuntimeSnapshot,
-        private val themed: Drawable,
     ) : ViewTreeObserver.OnPreDrawListener, View.OnAttachStateChangeListener {
 
         private var observer: ViewTreeObserver? = null
@@ -1623,10 +1626,34 @@ internal class NotificationPanelHooks(
         private var lastWriteAt = 0L
         private var stopped = false
 
+        /** Resolved on first success; the theme engine can be cold for the first seconds. */
+        private var themed: Drawable? = null
+
+        /** Draw passes forced while the themed icon is still unresolved. */
+        private var nudges = 0
+
         fun start() {
             observer = icon.viewTreeObserver
             observer?.addOnPreDrawListener(this)
             icon.addOnAttachStateChangeListener(this)
+            nudge()
+        }
+
+        /**
+         * The guard only acts inside OnPreDraw, which fires when something invalidates the view.
+         * A bound row that nobody redraws would never trigger it, so schedule a short ladder of
+         * draw passes — the same idea as the group-summary refill ladder.
+         */
+        private fun nudge() {
+            if (stopped || nudges >= 4) return
+            val delay = 256L shl nudges
+            nudges++
+            icon.postDelayed({
+                if (!stopped && themed == null) {
+                    icon.invalidate()
+                    nudge()
+                }
+            }, delay)
         }
 
         fun stop() {
@@ -1648,8 +1675,16 @@ internal class NotificationPanelHooks(
                 stop()
                 return true
             }
+            val themedNow = themed ?: snapshot.resolver
+                .resolveThemeDrawableByPackage(icon.context, sbn.packageName)
+                ?.also {
+                    themed = it
+                    writes = 0
+                    lastWriteAt = 0L
+                }
+                ?: return true
             val current = icon.drawable ?: return true
-            if (current === themed) return true
+            if (current === themedNow) return true
             // Anything else on screen is the host's own content — a contact photo, or the
             // "photo + badge" composition it built around one. That wins; the guard is done.
             if (!isHostAppIconPlaceholder(current)) {
@@ -1675,7 +1710,7 @@ internal class NotificationPanelHooks(
             }
             icon.clearColorFilter()
             icon.imageTintList = null
-            icon.setImageDrawable(themed)
+            icon.setImageDrawable(themedNow)
             return true
         }
 

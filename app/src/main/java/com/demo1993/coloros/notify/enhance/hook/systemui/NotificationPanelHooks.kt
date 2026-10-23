@@ -595,6 +595,18 @@ internal class NotificationPanelHooks(
                             return@install prefilled
                         }
                     }
+                    diagnostics.report(
+                        level = DiagnosticLevel.Debug,
+                        event = DiagnosticEvent.HostAvatarYield,
+                        message = "角标诊断：$packageName 已有头像，交回宿主合成结果",
+                        attributes = mapOf(
+                            "package" to packageName,
+                            "key" to rowSbn.key,
+                            "verdict" to verdict.reason,
+                            "hosted" to (hostedDrawable?.javaClass?.simpleName ?: "null"),
+                        ),
+                        occurrence = OccurrencePolicy.Once("header_badge_hosted:${rowSbn.key}"),
+                    )
                     return@install hosted
                 }
                 // An aggregated row ("[2条] …") is flagged as a group summary, so the renderable
@@ -685,7 +697,15 @@ internal class NotificationPanelHooks(
                 // A collapsed group summary is the one row that never gets a photo: ColorOS paints it
                 // from the app's monochrome small icon, which is a blank block for SMS. There the
                 // theme icon replaces the whole icon, as before.
-                if (verdict.reason != HostAvatarPresence.REASON_GROUP_SUMMARY) {
+                //
+                // A row with no large icon at all belongs to the same class: the host has nothing to
+                // compose an avatar out of, so the "composition" it caches is the bare app icon in
+                // the (larger) avatar slot — visible as an oversized unthemed icon where every other
+                // row shows a theme icon. It is replaced too.
+                if (
+                    verdict.reason != HostAvatarPresence.REASON_GROUP_SUMMARY &&
+                    verdict.reason != HostAvatarPresence.REASON_NO_LARGE_ICON
+                ) {
                     diagnostics.report(
                         level = DiagnosticLevel.Debug,
                         event = DiagnosticEvent.HostAvatarYield,
@@ -812,15 +832,15 @@ internal class NotificationPanelHooks(
                 originalSmallIcon = sbn.originalSmallIcon(diagnostics, snapshot.revision),
             ) ?: return
             if (!configuration.isCurrent(snapshot)) return
-            iconView.clearColorFilter()
-            iconView.imageTintList = null
-            iconView.setImageDrawable(plan.drawable)
-            plan.tintColor?.let { tint ->
-                iconView.colorFilter = PorterDuffColorFilter(tint, PorterDuff.Mode.SRC_IN)
-            }
+            writeGroupSummaryPlan(iconView, plan)
             if (verifyAfterWrite) {
+                // The guard re-writes the *resolved* plan, never a fresh lookup: the row's verdict
+                // can flip while the row lives (the host attaches the child avatar and the plan
+                // resolver then answers null), and a guard that re-resolved would silently write
+                // nothing and leave the host's own artwork on screen for good — the "aggregate row
+                // keeps the raw app icon badge" report.
                 keepGroupSummaryIcon(iconView, row, sbn, snapshot) {
-                    injectGroupSummaryIcon(iconView, row, snapshot, verifyAfterWrite = false)
+                    writeGroupSummaryPlan(iconView, plan)
                 }
                 verifyGroupSummaryIconAfterWrite(iconView, row, sbn, snapshot)
             }
@@ -831,6 +851,19 @@ internal class NotificationPanelHooks(
                 cause = exception,
                 revision = snapshot.revision,
             )
+        }
+    }
+
+    /** Writes a resolved group-summary plan into the badge view, stripping the host's decoration. */
+    private fun writeGroupSummaryPlan(
+        iconView: ImageView,
+        plan: NotificationIconResolver.PanelIconRenderPlan,
+    ) {
+        iconView.clearColorFilter()
+        iconView.imageTintList = null
+        iconView.setImageDrawable(plan.drawable)
+        plan.tintColor?.let { tint ->
+            iconView.colorFilter = PorterDuffColorFilter(tint, PorterDuff.Mode.SRC_IN)
         }
     }
 
@@ -1304,14 +1337,11 @@ internal class NotificationPanelHooks(
                 verifyIconAfterWrite(icon, wrapper, row, sbn, snapshot, target)
                 if (target == PanelIconTarget.OplusGroupSummary) {
                     keepGroupSummaryIcon(icon, row, sbn, snapshot) {
-                        applyPanelIcon(
-                            wrapper = wrapper,
-                            rowCandidate = row,
-                            target = target,
-                            expectedSnapshot = snapshot,
-                            allowDeferredLookup = false,
-                            verifyAfterWrite = false,
-                        )
+                        // Re-write the plan resolved above instead of re-running [applyPanelIcon].
+                        // The resolver answers null as soon as the row starts carrying a child
+                        // avatar, and a re-resolve would then write nothing at all — leaving the
+                        // host's raw badge on screen, which is what the guard exists to prevent.
+                        icon.applyRenderPlan(plan, target)
                     }
                 }
             }

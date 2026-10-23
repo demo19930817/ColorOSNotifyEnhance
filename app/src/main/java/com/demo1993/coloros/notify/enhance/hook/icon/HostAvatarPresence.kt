@@ -135,14 +135,25 @@ internal object HostAvatarPresence {
                 Verdict(mayCompose(sbn), "no-context")
             }
         }
-        // No large icon at all: keep the old, metadata-driven answer. Some picked packages get
-        // their photo from ColorOS' own contact store instead of the notification, and replacing
-        // those rows is the 3.5.9 "avatar disappeared" regression.
+        // No large icon at all means the host has no picture to put in the avatar slot, so this
+        // row is replaced like any other. It used to fall back to the metadata answer
+        // ([mayCompose]), which trusted a "message" category to carry a photo that had not arrived
+        // yet — but the host cannot compose an avatar out of nothing either: with no artwork it
+        // paints the raw app icon into the (larger) avatar slot. That is the "first row after a
+        // reboot shows the native icon, oversized and unthemed" report. A photo that lands late
+        // re-posts the notification, and the re-evaluation switches the row back to the host's
+        // composition by itself.
+        //
+        // The legacy reason for the old fallback was the 3.5.9 "avatar disappeared" regression,
+        // i.e. packages whose photo comes from ColorOS' own contact store rather than from the
+        // notification. Those apps still ship *some* artwork in the large icon — the store only
+        // supplies the picture for the summary row, which is handled by the `summary` branch above
+        // — so answering "no avatar" here does not touch them.
         val largeIcon = largeIconOf(notification, extras)
             ?: return if (summary) {
                 Verdict(renderable = false, reason = REASON_GROUP_SUMMARY)
             } else {
-                Verdict(mayCompose(sbn), "no-large-icon")
+                Verdict(renderable = false, reason = REASON_NO_LARGE_ICON)
             }
         val cacheKey = sbn.key + "#" + System.identityHashCode(largeIcon)
         avatarDecisions.get(cacheKey)?.let { return it.forRowType(summary) }
@@ -506,6 +517,12 @@ internal object HostAvatarPresence {
      * there is no person in it and the row keeps the themed icon.
      */
     const val REASON_APP_ARTWORK = "app-artwork"
+
+    /**
+     * [Verdict.reason] meaning the notification carries no large icon at all, so the host has
+     * nothing to build an avatar out of and would paint the bare app icon into the avatar slot.
+     */
+    const val REASON_NO_LARGE_ICON = "no-large-icon"
 
     /** Notification categories ColorOS renders with a per-sender avatar. */
     private val AVATAR_CATEGORIES = setOf(

@@ -8,8 +8,8 @@
 | --- | --- |
 | 项目 / 英文名 | `C17NotifyReplace` |
 | 桌面显示名 | `C17 通知替换` |
-| 应用 ID / namespace | `com.demo1993.coloros.notify.enhance` |
-| Xposed 入口 | `com.demo1993.coloros.notify.enhance.hook.ModuleMain` |
+| 应用 ID / namespace | `com.c17.notify.replace` |
+| Xposed 入口 | `com.c17.notify.replace.hook.ModuleMain` |
 | 日志 TAG / 线程名 | `C17NotifyReplace` |
 | CI 产物名 | `C17NotifyReplace-<version>.apk` |
 
@@ -26,7 +26,7 @@
 - 上游仓库不负责本仓库的改动；相关问题与改动记录留在本仓库。
 - 构建使用仓库内附带的公共开发证书（非生产密钥），任何人可用同一证书重新签名，不作官方发布使用。
 - 本仓库以 `robojamu/Glyph` 的最新 release `3.4.5-cn` 为源码基线重建（该版本自身基于 `Mangi-11/Glyph`）；改动明细与日期见 git 提交记录。
-- 应用 ID / namespace 为 `com.demo1993.coloros.notify.enhance`，与原项目 `ColorOSNotifyIcon` 的 `com.fankes.coloros.notify` 完全分离：两者可同时安装、互不覆盖，在 LSPosed 管理器与系统应用列表里也不会再被认成同一个模块。
+- 应用 ID / namespace 为 `com.c17.notify.replace`，与原项目 `ColorOSNotifyIcon` 的 `com.fankes.coloros.notify` 完全分离：两者可同时安装、互不覆盖，在 LSPosed 管理器与系统应用列表里也不会再被认成同一个模块。
 
 ## 规则来源
 

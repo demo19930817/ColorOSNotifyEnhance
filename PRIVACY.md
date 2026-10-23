@@ -157,7 +157,7 @@ JavaScript 是一种编程语言，用于制作更具互动性和动态的网页
 
 服务器日志： 与大多数网站一样，我们的服务器会自动记录您在访问网站时所发出的网页请求。这些“服务器日志”通常包括您的网络请求、互联网协议地址、浏览器类型、浏览器语言、请求的日期和时间及可以唯一识别您的浏览器的一个或多个 Cookie。
 
-### ColorOSNotifyEnhance Privacy Policy
+### C17NotifyReplace Privacy Policy
 
 > English
 
@@ -167,7 +167,7 @@ Amendment and effective date: April 25, 2022
 
 #### Preface
 
-In order to help you use ColorOSNotifyEnhance products (hereinafter referred to as "this product") or services, we may collect device information
+In order to help you use C17NotifyReplace products (hereinafter referred to as "this product") or services, we may collect device information
 related to the provision of services or apply for device permissions, and you have the right to refuse or withdraw authorization;
 
 We have adopted technical measures and data security measures that are standard in the Internet industry to protect the security of your device
@@ -326,7 +326,7 @@ mobile applications.
 IP Address: Every device that goes online is assigned a number called an Internet Protocol (IP) address. These numbers are usually assigned by
 geographic area. An IP address can often be used to identify where a device is connected to the Internet.
 
-Information collection technology: The "automatic collection" described in the "ColorOSNotifyEnhance Privacy Policy" includes the following methods:
+Information collection technology: The "automatic collection" described in the "C17NotifyReplace Privacy Policy" includes the following methods:
 A. Cookie (cookie file) Cookie is when you browse the web, the website server places it on the client (your A small text file in a computer,
 mobile phone or other intelligent terminal), when you visit the corresponding website again, the website can pass Cookies identify your browser.
 Cookies may store user preferences and other information. You can configure your browser to refuse all cookies or to display a prompt when a

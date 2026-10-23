@@ -22,6 +22,7 @@ import com.demo1993.coloros.notify.enhance.hook.HookRegistrar
 import com.demo1993.coloros.notify.enhance.hook.icon.HostAvatarComposition
 import com.demo1993.coloros.notify.enhance.hook.icon.HostAvatarPresence
 import com.demo1993.coloros.notify.enhance.hook.icon.NotificationIconResolver
+import com.demo1993.coloros.notify.enhance.hook.memberMissing
 import com.demo1993.coloros.notify.enhance.hook.runtimeFailure
 import java.lang.reflect.Method
 import java.util.concurrent.ConcurrentHashMap

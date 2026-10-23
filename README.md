@@ -26,7 +26,7 @@
 - 上游仓库不负责本仓库的改动；相关问题与改动记录留在本仓库。
 - 构建使用仓库内附带的公共开发证书（非生产密钥），任何人可用同一证书重新签名，不作官方发布使用。
 - 本仓库以 `robojamu/Glyph` 的最新 release `3.4.5-cn` 为源码基线重建（该版本自身基于 `Mangi-11/Glyph`）；改动明细与日期见 git 提交记录。
-- 自 `4.0` 起应用 ID / namespace 为 `com.demo1993.coloros.notify.enhance`（`3.7.1-cn` 为 `com.demo1993.coloros.notifyenhance`，`3.7.0-cn` 为 `com.demo1993.coloros.notify`），与原项目 `ColorOSNotifyIcon` 的 `com.fankes.coloros.notify` 完全分离：两者可同时安装、互不覆盖，在 LSPosed 管理器与系统应用列表里也不会再被认成同一个模块。
+- 应用 ID / namespace 为 `com.demo1993.coloros.notify.enhance`，与原项目 `ColorOSNotifyIcon` 的 `com.fankes.coloros.notify` 完全分离：两者可同时安装、互不覆盖，在 LSPosed 管理器与系统应用列表里也不会再被认成同一个模块。
 
 ## 规则来源
 
@@ -41,7 +41,7 @@
 
 ## 更新
 
-App 内「关于 → 检查更新」读取本仓库的 Releases。当前版本号形如 `4.0`（早期版本带 `-cn` 后缀，例如 `3.7.1-cn`），版本比较会忽略 `-cn` 这类后缀。
+App 内「关于 → 检查更新」读取本仓库的 Releases。当前版本号形如 `4.0`，若 tag 带 `-cn` 这类后缀，版本比较时会自动忽略。
 
 规则图标单独同步：首页「更新规则」按钮拉取 [ANIP](https://github.com/BetterAndroid/android-notification-icon-project)
 的清单，无后台自动同步；补充规则应向 ANIP 提交。

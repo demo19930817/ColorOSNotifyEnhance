@@ -143,24 +143,15 @@ internal class NotificationIconResolver(
             ?.let { icon -> StatusBarIconRenderPlan(icon = icon, isColorable = true) }
     }
 
-    /**
-     * @param ignoreHostAvatar resolve the row as if ColorOS were not going to compose an avatar.
-     * Used by the panel hook to take a row back after the host failed to deliver one: the yield is
-     * a bet on that composition, and when the artwork never arrives the bet costs the row its
-     * themed icon — the row simply stays on the plain app icon until it is rebound.
-     */
     fun resolvePanelIconPlan(
         context: Context,
         sbn: StatusBarNotification,
         originalSmallIcon: Icon?,
-        ignoreHostAvatar: Boolean = false,
     ): PanelIconRenderPlan? = resolveOrFallback("panel", "通知面板图标解析失败") {
         // ColorOS renders the "personal avatar + app-icon badge" composition itself for the picked
         // packages. Leave those rows, banner cards and lock-screen capsules untouched — but only
         // when this notification has an avatar for the host to compose (see the resolver method).
-        if (!ignoreHostAvatar && shouldYieldToHostAvatar(context, sbn.packageName, sbn)) {
-            return@resolveOrFallback null
-        }
+        if (shouldYieldToHostAvatar(context, sbn.packageName, sbn)) return@resolveOrFallback null
         resolvePanelIconPlanBody(context, sbn, originalSmallIcon)
     }
 

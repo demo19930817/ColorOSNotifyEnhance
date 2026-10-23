@@ -3,6 +3,9 @@ package com.demo1993.coloros.notify.enhance.core
 object SystemPackages {
     const val SYSTEM_SCOPE = "system"
     const val SYSTEM_UI = "com.android.systemui"
+
+    /** OPPO game assistant: draws its own dock, "弹幕" and message box over the running game. */
+    const val GAME_ASSISTANT = "com.oplus.games"
 }
 
 object ModuleInfo {

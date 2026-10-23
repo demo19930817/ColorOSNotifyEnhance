@@ -5,6 +5,7 @@ import com.demo1993.coloros.notify.enhance.diagnostics.DiagnosticEvent
 import com.demo1993.coloros.notify.enhance.diagnostics.DiagnosticLevel
 import com.demo1993.coloros.notify.enhance.diagnostics.Diagnostics
 import com.demo1993.coloros.notify.enhance.diagnostics.OccurrencePolicy
+import com.demo1993.coloros.notify.enhance.hook.games.GameAssistantRuntime
 import com.demo1993.coloros.notify.enhance.hook.systemserver.SystemServerHooks
 import com.demo1993.coloros.notify.enhance.hook.systemui.SystemUiRuntime
 import io.github.libxposed.api.XposedModule
@@ -66,7 +67,14 @@ class ModuleMain : XposedModule() {
     }
 
     override fun onPackageReady(param: PackageReadyParam) {
-        if (target != ProcessTarget.SystemUiMain) return
+        when (target) {
+            ProcessTarget.SystemUiMain -> installSystemUi(param)
+            ProcessTarget.GameAssistant -> installGameAssistant(param)
+            else -> Unit
+        }
+    }
+
+    private fun installSystemUi(param: PackageReadyParam) {
         if (param.packageName != SystemPackages.SYSTEM_UI || !param.isFirstPackage) return
 
         try {
@@ -80,6 +88,25 @@ class ModuleMain : XposedModule() {
             diagnostics.installationFailure(
                 scope = "systemui:initialize",
                 message = "SystemUI 运行时初始化失败",
+                cause = exception,
+            )
+        }
+        detachAfterInitialization()
+    }
+
+    private fun installGameAssistant(param: PackageReadyParam) {
+        if (param.packageName != SystemPackages.GAME_ASSISTANT || !param.isFirstPackage) return
+
+        try {
+            GameAssistantRuntime(
+                hooks = hooks,
+                diagnostics = diagnostics,
+                processName = processName,
+            ).install(param.classLoader)
+        } catch (exception: Exception) {
+            diagnostics.installationFailure(
+                scope = "games:initialize",
+                message = "游戏助手主题图标初始化失败",
                 cause = exception,
             )
         }
@@ -107,6 +134,7 @@ class ModuleMain : XposedModule() {
 internal enum class ProcessTarget(val diagnosticName: String) {
     SystemServer("system_server"),
     SystemUiMain("systemui_main"),
+    GameAssistant("games_main"),
     Ignore("ignore"),
 }
 
@@ -116,5 +144,6 @@ internal fun resolveProcessTarget(
 ): ProcessTarget = when {
     isSystemServer -> ProcessTarget.SystemServer
     processName == SystemPackages.SYSTEM_UI -> ProcessTarget.SystemUiMain
+    processName == SystemPackages.GAME_ASSISTANT -> ProcessTarget.GameAssistant
     else -> ProcessTarget.Ignore
 }

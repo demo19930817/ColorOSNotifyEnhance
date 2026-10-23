@@ -25,6 +25,8 @@ internal enum class DiagnosticEvent(val id: String) {
     HostAvatarReplace("icon.host_avatar_replace"),
     HostAvatarPrefill("icon.host_avatar_prefill"),
     PackageIconResolved("icon.package_icon_resolved"),
+    GameAssistantIconReplaced("games.icon_replaced"),
+    GameAssistantIconSkipped("games.icon_skipped"),
     ConfigLoaded("config.loaded"),
     ConfigLoadFailed("config.load_failed"),
     ConfigPublished("config.published"),

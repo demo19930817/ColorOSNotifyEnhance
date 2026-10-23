@@ -16,9 +16,9 @@ object ModuleInfo {
      * upstream build, which would drop the ColorOS 17 adaptations and the personal-avatar feature.
      * Upstream attribution lives in the open-source list on the about page.
      */
-    const val PROJECT_URL = "https://github.com/dreamdemo1993/ColorOSNotifyEnhance"
+    const val PROJECT_URL = "https://github.com/dreamdemo1993/C17NotifyReplace"
     const val RELEASES_PAGE = "$PROJECT_URL/releases"
-    const val RELEASES_API = "https://api.github.com/repos/dreamdemo1993/ColorOSNotifyEnhance/releases/latest"
+    const val RELEASES_API = "https://api.github.com/repos/dreamdemo1993/C17NotifyReplace/releases/latest"
     const val ANIP_REPO = "BetterAndroid/android-notification-icon-project"
     const val ANIP_BRANCH = "main"
     const val ANIP_PROJECT_URL = "https://github.com/$ANIP_REPO"

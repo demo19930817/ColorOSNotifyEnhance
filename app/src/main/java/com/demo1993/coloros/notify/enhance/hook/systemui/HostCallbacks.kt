@@ -14,7 +14,7 @@ internal fun wrapHostCallback(callbackType: Class<*>, original: Any, after: () -
         when (method.name) {
             "equals" -> proxy === args?.firstOrNull()
             "hashCode" -> System.identityHashCode(proxy)
-            "toString" -> "ColorOSNotifyEnhance\$HostCallback($original)"
+            "toString" -> "C17NotifyReplace\$HostCallback($original)"
             else -> {
                 val result = try {
                     method.invoke(original, *(args ?: emptyArray()))

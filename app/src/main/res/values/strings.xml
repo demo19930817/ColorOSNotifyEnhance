@@ -62,7 +62,7 @@
     <string name="about_title">关于</string>
     <string name="about_version">版本 %1$s (%2$d)</string>
     <string name="about_project">本项目</string>
-    <string name="about_project_summary">dreamdemo1993/ColorOSNotifyEnhance</string>
+    <string name="about_project_summary">dreamdemo1993/C17NotifyReplace</string>
     <string name="about_thanks">致谢</string>
     <string name="about_thanks_body">感谢 robojamu/Glyph：本模块以该分支的最新版本为源码基线，锁屏与锁屏岛通知图标替换、个人头像角标、状态栏规则图标与下拉栏主题图标三项能力均源自该分支，本模块在其基础上修正了时序与配色问题。\n感谢 Mangi-11/Glyph 用 libxposed API 重写 Hook 层并用 Miuix 重写界面。\n感谢 fankes/ColorOSNotifyIcon 提供的原始项目与图标规则库。</string>
     <string name="about_check_update">检查更新</string>

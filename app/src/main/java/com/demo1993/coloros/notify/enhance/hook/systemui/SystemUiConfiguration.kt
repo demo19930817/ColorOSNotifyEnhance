@@ -54,7 +54,7 @@ internal class SystemUiConfiguration(
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val loader = Executors.newSingleThreadExecutor { task ->
-        Thread(task, "ColorOSNotifyEnhance-config").apply { isDaemon = true }
+        Thread(task, "C17NotifyReplace-config").apply { isDaemon = true }
     }
     private val latestRequest = AtomicLong()
     private val remotePreferences = openRemotePreferences()

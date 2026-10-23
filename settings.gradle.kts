@@ -33,5 +33,5 @@ gropify {
     }
     rootProject { common { isEnabled = false } }
 }
-rootProject.name = "ColorOSNotifyEnhance"
+rootProject.name = "C17NotifyReplace"
 include(":app")

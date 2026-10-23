@@ -1,4 +1,4 @@
-# ColorOSNotifyEnhance（ColorOS 通知图标增强）
+# C17NotifyReplace（C17 通知替换）
 
 本仓库为自用改动线，用于个人设备。
 
@@ -6,12 +6,12 @@
 
 | 项目 | 值 |
 | --- | --- |
-| 仓库 / 英文名 | `ColorOSNotifyEnhance` |
-| 桌面显示名 | `ColorOS 通知图标增强` |
+| 项目 / 英文名 | `C17NotifyReplace` |
+| 桌面显示名 | `C17 通知替换` |
 | 应用 ID / namespace | `com.demo1993.coloros.notify.enhance` |
 | Xposed 入口 | `com.demo1993.coloros.notify.enhance.hook.ModuleMain` |
-| 日志 TAG / 线程名 | `ColorOSNotifyEnhance` |
-| CI 产物名 | `ColorOSNotifyEnhance-<version>.apk` |
+| 日志 TAG / 线程名 | `C17NotifyReplace` |
+| CI 产物名 | `C17NotifyReplace-<version>.apk` |
 
 ## 上游来源
 

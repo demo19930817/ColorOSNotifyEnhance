@@ -41,8 +41,8 @@ jobs:
           set -euo pipefail
           apk=$(find app/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' -print -quit)
           test -n "$apk"
-          install -m 0644 "$apk" "${RUNNER_TEMP}/ColorOSNotifyEnhance.apk"
-          sha256sum "${RUNNER_TEMP}/ColorOSNotifyEnhance.apk" | tee "${RUNNER_TEMP}/ColorOSNotifyEnhance.apk.sha256"
+          install -m 0644 "$apk" "${RUNNER_TEMP}/C17NotifyReplace.apk"
+          sha256sum "${RUNNER_TEMP}/C17NotifyReplace.apk" | tee "${RUNNER_TEMP}/C17NotifyReplace.apk.sha256"
 
       - name: Publish release
         shell: bash
@@ -53,8 +53,8 @@ jobs:
           tag="${{ github.event.inputs.tag }}"
           [ -n "$tag" ] || tag="${GITHUB_REF_NAME}"
           gh release create "$tag" \
-            "${RUNNER_TEMP}/ColorOSNotifyEnhance.apk" \
-            "${RUNNER_TEMP}/ColorOSNotifyEnhance.apk.sha256" \
+            "${RUNNER_TEMP}/C17NotifyReplace.apk" \
+            "${RUNNER_TEMP}/C17NotifyReplace.apk.sha256" \
             --title "$tag" \
             --generate-notes \
             --target "$GITHUB_SHA"

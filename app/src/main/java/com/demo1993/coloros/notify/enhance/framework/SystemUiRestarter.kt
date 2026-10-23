@@ -141,7 +141,7 @@ object SystemUiRestarter {
                 "未找到 su 命令，请确认 Root 环境已正确加载"
             detail.contains("Permission denied", ignoreCase = true) ||
                 detail.contains("denied", ignoreCase = true) ->
-                "Root 权限被拒绝，请在 Root 管理器中允许 ColorOS 通知图标增强"
+                "Root 权限被拒绝，请在 Root 管理器中允许 C17 通知替换"
             else -> "无法执行 SystemUI 重启命令"
         }
     }

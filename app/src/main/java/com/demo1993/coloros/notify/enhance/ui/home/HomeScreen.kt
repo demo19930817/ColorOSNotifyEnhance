@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.res.Configuration
 import android.net.Uri
 import android.os.Build
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -25,6 +26,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
@@ -43,6 +46,9 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
@@ -230,7 +236,7 @@ private fun RuleSourceDialog(
         summary = stringResource(R.string.dialog_rule_source_summary),
         onDismissRequest = onDismiss,
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             RuleSourceType.entries.forEach { type ->
                 RuleSourceOptionRow(
                     label = stringResource(ruleSourceLabelRes(type)),
@@ -240,27 +246,46 @@ private fun RuleSourceDialog(
                 )
             }
         }
-        Spacer(Modifier.height(12.dp))
-        Text(
-            text = stringResource(R.string.dialog_rule_source_repository),
-            fontSize = MiuixTheme.textStyles.body1.fontSize,
-            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-        )
-        Spacer(Modifier.height(6.dp))
+        Spacer(Modifier.height(18.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = stringResource(R.string.dialog_rule_source_repository),
+                fontSize = MiuixTheme.textStyles.body1.fontSize,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            )
+            Spacer(Modifier.weight(1f))
+            // A secondary entry point rather than a third full-width button: the sheet stays at
+            // two actions, so the confirm row keeps its weight.
+            Text(
+                text = stringResource(R.string.dialog_rule_source_cloud),
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(onClick = onOpenCloud)
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                fontSize = MiuixTheme.textStyles.body2.fontSize,
+                color = MiuixTheme.colorScheme.primary,
+            )
+        }
+        Spacer(Modifier.height(8.dp))
         TextField(
             state = repositoryState,
             modifier = Modifier.fillMaxWidth(),
+            lineLimits = TextFieldLineLimits.SingleLine,
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Uri,
+                imeAction = ImeAction.Done,
+            ),
         )
         if (showRepositoryError) {
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(6.dp))
             Text(
                 text = stringResource(R.string.dialog_rule_source_repository_invalid),
                 fontSize = MiuixTheme.textStyles.body2.fontSize,
                 color = MiuixTheme.colorScheme.primary,
             )
         }
-        Spacer(Modifier.height(12.dp))
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Spacer(Modifier.height(18.dp))
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             TextButton(
                 text = stringResource(R.string.dialog_cancel),
                 onClick = onDismiss,
@@ -273,11 +298,6 @@ private fun RuleSourceDialog(
                 colors = ButtonDefaults.textButtonColorsPrimary(),
             )
         }
-        TextButton(
-            text = stringResource(R.string.dialog_rule_source_cloud),
-            onClick = onOpenCloud,
-            modifier = Modifier.fillMaxWidth(),
-        )
     }
 }
 
@@ -291,35 +311,49 @@ private fun RuleSourceOptionRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = label,
-                fontSize = MiuixTheme.textStyles.body1.fontSize,
-                color = if (selected) {
-                    MiuixTheme.colorScheme.primary
+            .clip(RoundedCornerShape(12.dp))
+            .background(
+                if (selected) {
+                    MiuixTheme.colorScheme.primary.copy(alpha = 0.10f)
                 } else {
-                    MiuixTheme.colorScheme.onSurface
+                    Color.Transparent
                 },
             )
-            Text(
-                text = hint,
-                fontSize = MiuixTheme.textStyles.body2.fontSize,
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-        if (selected) {
-            Text(
-                text = "✓",
-                fontSize = MiuixTheme.textStyles.body1.fontSize,
-                color = MiuixTheme.colorScheme.primary,
-            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            fontSize = 15.sp,
+            maxLines = 1,
+            color = if (selected) {
+                MiuixTheme.colorScheme.primary
+            } else {
+                MiuixTheme.colorScheme.onSurface
+            },
+        )
+        Spacer(Modifier.width(10.dp))
+        // The host name rides on the same line instead of wrapping under the label; that keeps the
+        // three routes to three rows.
+        Text(
+            modifier = Modifier.weight(1f),
+            text = hint,
+            fontSize = 12.sp,
+            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.End,
+        )
+        Spacer(Modifier.width(8.dp))
+        Box(modifier = Modifier.size(18.dp), contentAlignment = Alignment.Center) {
+            if (selected) {
+                Text(
+                    text = "✓",
+                    fontSize = 14.sp,
+                    color = MiuixTheme.colorScheme.primary,
+                )
+            }
         }
     }
 }

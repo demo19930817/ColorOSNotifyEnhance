@@ -66,7 +66,7 @@ androidComponents {
         variant.outputs.forEach { output ->
             output.outputFileName.set(
                 output.versionName.map { versionName ->
-                    "ColorOSNotifyEnhance-$versionName.apk"
+                    "C17NotifyReplace-$versionName.apk"
                 }
             )
         }

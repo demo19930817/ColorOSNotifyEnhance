@@ -1530,10 +1530,48 @@ internal class NotificationPanelHooks(
         sbn: StatusBarNotification,
         snapshot: RuntimeSnapshot,
     ) {
-        val themed = snapshot.resolver.resolveThemeDrawableByPackage(icon.context, sbn.packageName)
-            ?: return
-        summaryBlankGuards.put(icon, SummaryBlankGuard(icon, row, sbn, snapshot, themed))?.stop()
+        // The theme icon can be a transient blank right after the shade opens — the engine hands
+        // back the icon before its background layer is ready, which [ThemeIconProvider] rejects, so
+        // there is nothing to write here *yet*. Attach the guard anyway: it re-resolves on each
+        // repair and a delayed refill keeps trying until the icon is ready, then hands off to the
+        // IconTakeover that holds it for good.
+        summaryBlankGuards.put(icon, SummaryBlankGuard(icon, row, sbn, snapshot))?.stop()
         summaryBlankGuards[icon]?.start()
+        scheduleGroupSummaryRefill(icon, row, sbn, snapshot)
+    }
+
+    /**
+     * Re-resolves the group summary theme icon on a short ladder after a bind that found nothing.
+     *
+     * The theme engine returns a blank sheet for a second or two after the shade opens; the row
+     * reaches the null-plan branch because of exactly that, so without this retry it stays on the
+     * host's white mask until SystemUI restarts. Each step re-resolves — a cache hit once the icon
+     * is ready — and the first non-null result writes the icon and installs the IconTakeover that
+     * holds it afterwards, so the remaining steps short-circuit.
+     */
+    private fun scheduleGroupSummaryRefill(
+        icon: ImageView,
+        row: Any?,
+        sbn: StatusBarNotification,
+        snapshot: RuntimeSnapshot,
+    ) {
+        GROUP_SUMMARY_REFILL_DELAYS_MILLIS.forEach { delay ->
+            icon.postDelayed({
+                if (!configuration.isCurrent(snapshot) || !icon.isAttachedToWindow) return@postDelayed
+                // An IconTakeover already holding the slot means a later bind wrote the theme icon;
+                // nothing left to refill.
+                if (groupIconTakeovers[icon] != null) return@postDelayed
+                val plan = snapshot.resolver.resolveGroupSummaryIconPlan(
+                    context = icon.context,
+                    sbn = sbn,
+                    originalSmallIcon = sbn.originalSmallIcon(diagnostics, snapshot.revision),
+                ) ?: return@postDelayed
+                icon.applyRenderPlan(plan, PanelIconTarget.OplusGroupSummary)
+                keepGroupSummaryIcon(icon, row, sbn, snapshot) {
+                    icon.applyRenderPlan(plan, PanelIconTarget.OplusGroupSummary)
+                }
+            }, delay)
+        }
     }
 
     private inner class SummaryBlankGuard(
@@ -1541,11 +1579,11 @@ internal class NotificationPanelHooks(
         private val row: Any?,
         private val sbn: StatusBarNotification,
         private val snapshot: RuntimeSnapshot,
-        private val themed: Drawable,
     ) : ViewTreeObserver.OnPreDrawListener, View.OnAttachStateChangeListener {
 
         private var observer: ViewTreeObserver? = null
         private var inspected: Drawable? = null
+        private var written: Drawable? = null
         private var repairs = 0
         private var lastRepairAt = 0L
         private var stopped = false
@@ -1580,21 +1618,32 @@ internal class NotificationPanelHooks(
                 return true
             }
             val current = icon.drawable ?: return true
-            if (current === themed || current === inspected) return true
+            // Once the IconTakeover (installed by the refill once the theme icon is ready) owns the
+            // slot, this guard has nothing left to watch.
+            if (groupIconTakeovers[icon] != null) {
+                stop()
+                return true
+            }
+            if (current === written || current === inspected) return true
             inspected = current
             val blank = HostAvatarPresence.looksBlank(current)
+            val mask = HostAvatarPresence.looksLikeMonochromeMask(current)
             val placeholder = HostAvatarPresence.looksLikeLauncherIcon(
                 context = icon.context,
                 packageName = sbn.packageName,
                 drawable = current,
             )
-            if (!blank && !placeholder) return true
+            if (!blank && !mask && !placeholder) return true
             val now = SystemClock.uptimeMillis()
             if (repairs >= MAX_GROUP_ICON_TAKEOVERS &&
                 now - lastRepairAt < TAKEOVER_QUIET_INTERVAL_MILLIS
             ) {
                 return true
             }
+            // Re-resolve on each repair: the theme icon may have been a transient blank at bind,
+            // and [ThemeIconProvider] refuses to cache one, so a later lookup can still succeed.
+            val themed = snapshot.resolver.resolveThemeDrawableByPackage(icon.context, sbn.packageName)
+            if (themed == null) return true
             lastRepairAt = now
             repairs++
             if (repairs == 1) {
@@ -1606,6 +1655,7 @@ internal class NotificationPanelHooks(
                         "package" to sbn.packageName,
                         "key" to sbn.key,
                         "blank" to blank.toString(),
+                        "mask" to mask.toString(),
                         "placeholder" to placeholder.toString(),
                     ),
                     occurrence = OccurrencePolicy.Once("panel:summary_blank_repair:${sbn.key}"),
@@ -1614,6 +1664,7 @@ internal class NotificationPanelHooks(
             icon.imageTintList = null
             icon.colorFilter = null
             icon.setImageDrawable(themed)
+            written = themed
             return true
         }
 
@@ -1906,8 +1957,16 @@ internal class NotificationPanelHooks(
          */
         const val MAX_GROUP_ICON_TAKEOVERS = 12
 
-        /** Repair interval once the guard is past its logged burst, to keep repaints bounded. */
-        const val TAKEOVER_QUIET_INTERVAL_MILLIS = 200L
+    /** Repair interval once the guard is past its logged burst, to keep repaints bounded. */
+    const val TAKEOVER_QUIET_INTERVAL_MILLIS = 200L
+
+    /**
+     * Retry ladder for a group summary that bound before its theme icon was ready. The engine returns
+     * a blank sheet for a second or two after the shade opens, so the first resolve finds nothing;
+     * these steps span roughly four seconds, after which the icon is either ready and held by the
+     * IconTakeover, or genuinely absent and the host keeps its own artwork.
+     */
+    val GROUP_SUMMARY_REFILL_DELAYS_MILLIS = longArrayOf(256L, 512L, 1024L, 2048L)
 
         /**
          * Retry schedule for a row whose sender photo was not attached yet when it was first bound.

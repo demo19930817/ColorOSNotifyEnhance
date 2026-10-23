@@ -210,6 +210,38 @@ internal object HostAvatarPresence {
      */
     fun looksBlank(drawable: Drawable?): Boolean = drawable != null && isBlankArtwork(drawable)
 
+    /**
+     * Whether a drawable already on screen is the host's own monochrome notification mask — the
+     * plain white squircle ColorOS paints for a collapsed group that has no avatar, with at most a
+     * faint single-colour shape inside. The SMS group row is the canonical case: a white bubble on
+     * a white pill. [looksBlank] only catches a perfectly flat fill, so this complements it for the
+     * guard: a real photo varies far more than this across the centre, a themed icon is colourful.
+     */
+    fun looksLikeMonochromeMask(drawable: Drawable?): Boolean {
+        val drawable = drawable ?: return false
+        val pixels = sample(drawable) ?: return false
+        var sum = 0.0
+        var min = Double.MAX_VALUE
+        var max = -Double.MAX_VALUE
+        var count = 0
+        for (y in SAMPLE_MARGIN until SAMPLE_SIZE - SAMPLE_MARGIN) {
+            for (x in SAMPLE_MARGIN until SAMPLE_SIZE - SAMPLE_MARGIN) {
+                val pixel = pixels[y * SAMPLE_SIZE + x]
+                if ((pixel ushr 24) < 32) continue
+                val luminance = 0.299 * ((pixel ushr 16) and 0xFF) +
+                    0.587 * ((pixel ushr 8) and 0xFF) +
+                    0.114 * (pixel and 0xFF)
+                sum += luminance
+                if (luminance < min) min = luminance
+                if (luminance > max) max = luminance
+                count++
+            }
+        }
+        if (count == 0) return false
+        val mean = sum / count
+        return mean >= MASK_WHITE_LUMINANCE && (max - min) < MASK_SPREAD_TOLERANCE
+    }
+
     private fun judge(
         context: Context,
         packageName: String,
@@ -447,6 +479,12 @@ internal object HostAvatarPresence {
      * step or two of JPEG/rounding noise stays well under it; no photo does.
      */
     private const val BLANK_ARTWORK_TOLERANCE = 6.0
+
+    /** Mean luminance above which a mostly-white mask counts as "no artwork". */
+    private const val MASK_WHITE_LUMINANCE = 224.0
+
+    /** Luminance spread below which a mostly-white drawable is the host's monochrome mask, not a photo. */
+    private const val MASK_SPREAD_TOLERANCE = 48.0
 
     /** Keyed by notification key + large-icon identity, so a re-post is re-evaluated. */
     private val avatarDecisions = LruCache<String, Verdict>(64)

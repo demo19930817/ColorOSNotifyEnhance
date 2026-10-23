@@ -22,6 +22,12 @@ internal class FullScreenBannerHooks(
     private val configuration: SystemUiConfiguration,
     private val members: FullScreenBannerMembers,
 ) {
+    private companion object {
+        /** Host wrapper that paints "main artwork + corner badge"; see [rebadgeWithTheme]. */
+        const val DRAWABLE_WITH_BADGE_CLASS =
+            "com.oplus.systemui.notification.utlils.DrawableWithBadge"
+    }
+
     @Volatile
     private var lastEntry: Any? = null
 
@@ -102,8 +108,8 @@ internal class FullScreenBannerHooks(
                 null
             }
             // Chain.getArgs() is immutable; build a fresh argument array when a plan applies.
-            val newArgs = if (plan != null) {
-                chain.args.toTypedArray().also {
+            val newArgs = when {
+                plan != null -> chain.args.toTypedArray().also {
                     it[0] = plan.drawable
                     val avatar = chain.args.getOrNull(2) as? Drawable
                     if (avatar != null) {
@@ -112,8 +118,17 @@ internal class FullScreenBannerHooks(
                     // ColorOS 17: largeIconWithBadge takes precedence over the icon argument.
                     if (it.size > 4) it[4] = null
                 }
-            } else {
-                null
+                // An avatar row yields (no whole-row replacement), but its corner badge is still
+                // composed here from argument 0 — the bare app icon. Swap just the badge slots:
+                // the host keeps the photo, the badge becomes the theme icon.
+                context != null && entry != null ->
+                    themedBadgeDrawable(context, entry)?.let { themed ->
+                        chain.args.toTypedArray().also { args ->
+                            args[0] = themed
+                            args.getOrNull(4)?.let { large -> rebadgeWithTheme(large, themed) }
+                        }
+                    }
+                else -> null
             }
             // Do not use `?.let { } ?: `: proceed() legitimately returns null (void setters),
             // which would fall through and invoke the target a second time.
@@ -147,14 +162,59 @@ internal class FullScreenBannerHooks(
         builder: Any,
         entry: Any,
     ): NotificationIconResolver.PanelIconRenderPlan? {
-        val plan = resolvePanelPlan(context, entry) ?: return null
-        members.builderIcon?.set(builder, plan.drawable)
-        members.builderAvatarIcon?.set(
-            builder,
-            plan.drawable.constantState?.newDrawable()?.mutate() ?: plan.drawable,
-        )
-        members.builderLargeIconWithBadge?.set(builder, null)
-        return plan
+        val plan = resolvePanelPlan(context, entry)
+        if (plan != null) {
+            members.builderIcon?.set(builder, plan.drawable)
+            members.builderAvatarIcon?.set(
+                builder,
+                plan.drawable.constantState?.newDrawable()?.mutate() ?: plan.drawable,
+            )
+            members.builderLargeIconWithBadge?.set(builder, null)
+            return plan
+        }
+        // Avatar row: the banner keeps the host's "photo + corner badge" composition, so only the
+        // badge slots are themed — Builder.mIcon is the badge source for the message-style branch,
+        // and a pre-composed mLargeIconWithBadge carries the bare small icon as its badge.
+        statusBarNotificationFrom(entry) ?: return null
+        val themed = themedBadgeDrawable(context, entry) ?: return null
+        members.builderIcon?.set(builder, themed)
+        members.builderLargeIconWithBadge?.get(builder)?.let { rebadgeWithTheme(it, themed) }
+        return null
+    }
+
+    /**
+     * The theme icon for the badge slot of an avatar-bearing banner row, or null when replacement
+     * is off / the package has no theme icon. Guarded by the same switches as the whole-row plan
+     * so the banner never mixes a themed badge into an unthemed configuration.
+     */
+    private fun themedBadgeDrawable(
+        context: Context,
+        entry: Any,
+    ): Drawable? {
+        val snapshot = configuration.snapshot
+        if (!snapshot.config.panelIconReplacementEnabled) return null
+        if (!snapshot.resolver.panelThemeIconsEnabled()) return null
+        val sbn = statusBarNotificationFrom(entry) ?: return null
+        return try {
+            snapshot.resolver.resolveThemeDrawableByPackage(context, sbn.packageName)
+                ?.takeIf { configuration.isCurrent(snapshot) }
+        } catch (exception: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Swaps the badge inside the host's pre-composed `DrawableWithBadge` (the Builder's
+     * mLargeIconWithBadge slot) for the theme icon. The wrapper paints main + badge at draw time,
+     * so a late `setBadge` call re-themes the corner without touching the photo underneath.
+     */
+    private fun rebadgeWithTheme(large: Any, themed: Drawable) {
+        if (large.javaClass.name != DRAWABLE_WITH_BADGE_CLASS) return
+        runCatching {
+            large.javaClass
+                .getMethod("setBadge", Drawable::class.java)
+                .invoke(large, themed)
+        }
     }
 
     private fun refreshBannerIcon(context: Context, banner: Any, entry: Any) {

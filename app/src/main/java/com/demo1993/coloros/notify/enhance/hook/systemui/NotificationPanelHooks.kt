@@ -348,21 +348,78 @@ internal class NotificationPanelHooks(
             if (!snapshot.config.panelIconReplacementEnabled) return@install chain.proceed()
             if (!snapshot.resolver.panelThemeIconsEnabled()) return@install chain.proceed()
             // (Context, origin: Drawable, badge: Drawable, packageName: String, contentSizePx: Int)
+            //
+            // Located by type instead of by index: the helper is Kotlin top-level code compiled
+            // against `Drawable`, so a null badge, a reordered signature or an extra parameter on
+            // another ColorOS build would silently make the old index-based lookup a no-op — which
+            // is exactly how this hook ended up installed but never firing.
             val args = chain.args
-            val hostContext = args.getOrNull(0) as? Context ?: return@install chain.proceed()
-            if (args.getOrNull(2) !is Drawable) return@install chain.proceed()
-            val packageName = args.getOrNull(3) as? String ?: return@install chain.proceed()
+            val hostContext = args.firstOrNull { it is Context } as? Context
+            val packageName = args.firstOrNull { it is String } as? String
+            if (hostContext == null || packageName.isNullOrEmpty()) {
+                diagnostics.report(
+                    level = DiagnosticLevel.Debug,
+                    event = DiagnosticEvent.PackageIconResolved,
+                    message = "角标诊断：合成钩子参数里没有 Context/包名，保持宿主角标",
+                    attributes = mapOf(
+                        "args" to args.joinToString(prefix = "[", postfix = "]") {
+                            it?.javaClass?.simpleName ?: "null"
+                        },
+                    ),
+                    occurrence = OccurrencePolicy.Once("compose_badge_args"),
+                )
+                return@install chain.proceed()
+            }
             val themed = snapshot.resolver.resolveThemeDrawableByPackage(hostContext, packageName)
-                ?: return@install chain.proceed()
+            if (themed == null) {
+                diagnostics.report(
+                    level = DiagnosticLevel.Debug,
+                    event = DiagnosticEvent.PackageIconResolved,
+                    message = "角标诊断：$packageName 没有可用的主题图标，保持宿主角标",
+                    attributes = mapOf("package" to packageName),
+                    occurrence = OccurrencePolicy.Once("compose_badge_missing:$packageName"),
+                )
+                return@install chain.proceed()
+            }
+            // The avatar is the first Drawable argument, the corner badge the second.
+            val badgeIndex = args.withIndex()
+                .filter { it.value is Drawable }
+                .map { it.index }
+                .getOrNull(1)
+            if (badgeIndex == null) {
+                diagnostics.report(
+                    level = DiagnosticLevel.Debug,
+                    event = DiagnosticEvent.PackageIconResolved,
+                    message = "角标诊断：$packageName 宿主合成调用没有角标位，保持原样",
+                    attributes = mapOf(
+                        "package" to packageName,
+                        "args" to args.joinToString(prefix = "[", postfix = "]") {
+                            it?.javaClass?.simpleName ?: "null"
+                        },
+                    ),
+                    occurrence = OccurrencePolicy.Once("compose_badge_nobadge:$packageName"),
+                )
+                return@install chain.proceed()
+            }
             diagnostics.report(
                 level = DiagnosticLevel.Debug,
                 event = DiagnosticEvent.PackageIconResolved,
                 message = "角标诊断：$packageName 宿主合成头像时角标用主题图标",
-                attributes = mapOf("package" to packageName),
+                attributes = mapOf(
+                    "package" to packageName,
+                    "badge" to badgeIndex.toString(),
+                ),
                 occurrence = OccurrencePolicy.Once("compose_badge:$packageName"),
             )
-            chain.proceed(args.toTypedArray().also { it[2] = themed })
+            chain.proceed(args.toTypedArray().also { it[badgeIndex] = themed })
         }
+        diagnostics.report(
+            level = DiagnosticLevel.Info,
+            event = DiagnosticEvent.HookInstalled,
+            message = "角标诊断：头像+角标合成钩子已安装（角标将换成主题图标）",
+            attributes = mapOf("method" to method.name),
+            occurrence = OccurrencePolicy.Once("compose_badge_installed"),
+        )
     }
 
     /**
@@ -587,7 +644,7 @@ internal class NotificationPanelHooks(
                         diagnostics.report(
                             level = DiagnosticLevel.Debug,
                             event = DiagnosticEvent.PackageIconResolved,
-                            message = "角标诊断：$packageName 聚合摘要判定为有头像但合成失败，回退主题图标",
+                            message = "角标诊断：$packageName 聚合摘要判定为有头像但合成失败，交给宿主",
                             attributes = mapOf(
                                 "package" to packageName,
                                 "key" to rowSbn.key,
@@ -595,6 +652,11 @@ internal class NotificationPanelHooks(
                             ),
                             occurrence = OccurrencePolicy.Once("header_badge_summary_failed:${rowSbn.key}"),
                         )
+                        // The row *has* a photo, only this module cannot compose it (not an
+                        // avatar-priority package, undecodable artwork, ...). Falling through to the
+                        // theme icon would paint over the avatar the host is about to compose — the
+                        // "theme icon ↔ avatar+角标" flip. Hand the row back instead.
+                        return@install chain.proceed()
                     } else {
                         diagnostics.report(
                             level = DiagnosticLevel.Debug,

@@ -166,6 +166,14 @@ internal class NotificationIconResolver(
         sbn: StatusBarNotification,
         originalSmallIcon: Icon?,
     ): PanelIconRenderPlan? = resolveOrFallback("panel", "通知面板图标解析失败") {
+        // A collapsed group can still carry a real sender photo in its large icon (WeCom and
+        // WorkBuddy post one for the aggregate row). ColorOS composes "avatar + badge" for it by
+        // itself, so painting the theme icon there would fight the host: the row would flip between
+        // the theme icon and the avatar every time GroupIconManager repaints — exactly the "图标跳
+        // 变成个人头像+角标" flicker. Yield to the host whenever there is a photo to compose; the
+        // corner badge is already the theme icon through the composition hook.
+        val avatar = HostAvatarPresence.evaluate(context, sbn, allowGroupSummaryAvatar = true)
+        if (avatar.renderable) return@resolveOrFallback null
         // No "keep the original small icon" fallback here. On a collapsed group that fallback is
         // exactly the bug it looks like: the monochrome notification mask (SMS: a plain white
         // speech bubble) painted straight into the icon box, with the host then deriving the pill

@@ -161,6 +161,7 @@ internal class NotificationIconResolver(
      * and never a contact avatar, so honouring the avatar here would only replace a themed icon with
      * the plain one. That row therefore keeps the configured icon source.
      */
+    @Suppress("UNUSED_PARAMETER") // Kept in the signature: every panel caller already has the icon.
     fun resolveGroupSummaryIconPlan(
         context: Context,
         sbn: StatusBarNotification,
@@ -179,12 +180,21 @@ internal class NotificationIconResolver(
         // speech bubble) painted straight into the icon box, with the host then deriving the pill
         // colour from that white artwork — a blank white squircle next to the count badge. Leaving
         // the row alone keeps ColorOS' own app icon, which is what the group row should show.
-        resolvePanelIconPlanBody(
-            context = context,
-            sbn = sbn,
-            originalSmallIcon = originalSmallIcon,
-            allowRawSmallIconFallback = false,
-        )
+        //
+        // Rule masks and the placeholder are refused for the same reason, so this row only accepts
+        // the real desktop theme icon. Those fallbacks are monochrome masks meant for the status
+        // bar, where SystemUI tints them; the panel draws them as-is, which is the white disc the
+        // user sees as "农行出现了规则图标". Whenever the theme icon cannot be resolved we return
+        // null and the host keeps the app icon it already has.
+        if (
+            !NotificationIconPolicy.shouldProcessPanel(
+                config = policyConfig,
+                isMediaNotification = sbn.isMediaNotification(),
+                isOplusPush = sbn.isOplusPush(),
+            )
+        ) return@resolveOrFallback null
+        resolveThemeIconReplacement(context, sbn, IconSurface.Panel)
+            ?.toPanelIconRenderPlanOrNull(context, "panel")
     }
 
     private fun resolvePanelIconPlanBody(

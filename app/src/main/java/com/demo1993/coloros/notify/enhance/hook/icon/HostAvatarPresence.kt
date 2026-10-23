@@ -202,6 +202,14 @@ internal object HostAvatarPresence {
         return runCatching { icon.loadDrawable(context) }.getOrNull()
     }
 
+    /**
+     * Whether a drawable already on screen is a solid fill instead of a picture.
+     *
+     * Used by the panel guard that repairs rows the host painted blank: the check has to run on the
+     * artwork the host produced, not on the notification it came from.
+     */
+    fun looksBlank(drawable: Drawable?): Boolean = drawable != null && isBlankArtwork(drawable)
+
     private fun judge(
         context: Context,
         packageName: String,

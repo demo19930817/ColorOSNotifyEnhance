@@ -141,4 +141,5 @@ private val TRACED_EVENTS = setOf(
     DiagnosticEvent.GameAssistantIconReplaced,
     DiagnosticEvent.GameAssistantIconSkipped,
     DiagnosticEvent.GameAssistantIconSelfCheck,
+    DiagnosticEvent.ThemeIconBlank,
 )

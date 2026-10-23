@@ -7,6 +7,7 @@ import android.graphics.PorterDuff
 import android.graphics.PorterDuffColorFilter
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
+import android.os.SystemClock
 import android.service.notification.StatusBarNotification
 import android.util.LruCache
 import android.view.View
@@ -1282,6 +1283,14 @@ internal class NotificationPanelHooks(
                 // Yielding to the host avatar. ColorOS composes that avatar asynchronously, so the
                 // row would paint the plain small icon first; pre-compose it here instead.
                 if (target == PanelIconTarget.Header) prefillHostAvatar(icon, wrapper, sbn, snapshot)
+                // An aggregated row that just yielded still has to end up with *something*: when
+                // the host has no photo to compose it paints its own monochrome artwork, and for
+                // SMS that is the blank white bubble that also tints the whole pill white. Watch
+                // the row and put the theme icon back only for those blank results, so a real
+                // sender photo on an aggregated row is never touched.
+                if (target == PanelIconTarget.OplusGroupSummary) {
+                    guardSummaryIconAgainstBlank(icon, row, sbn, snapshot)
+                }
                 return
             }
 
@@ -1415,6 +1424,7 @@ internal class NotificationPanelHooks(
         private var applied: Drawable? = null
         private var observer: ViewTreeObserver? = null
         private var reapplies = 0
+        private var lastApplyAt = 0L
         private var stopped = false
 
         fun start() {
@@ -1449,31 +1459,161 @@ internal class NotificationPanelHooks(
                 return true
             }
             if (icon.drawable === expected) return true
-            if (reapplies >= MAX_GROUP_ICON_TAKEOVERS) {
+            // Never hand the row back to the host. Giving up used to be the only way out of a
+            // fight loop, but the host's last write is what stays on screen: the row then keeps a
+            // blank white composition until SystemUI restarts, which is exactly the "聚合图标又
+            // 变白了，重启后恢复" report. Re-applying at draw time is one identity compare per
+            // frame, so the guard simply stays; past [MAX_GROUP_ICON_TAKEOVERS] it goes quiet and
+            // throttles to one repair per [TAKEOVER_QUIET_INTERVAL_MILLIS] to keep the repaint
+            // loop bounded instead of spinning on every frame.
+            val now = SystemClock.uptimeMillis()
+            if (reapplies >= MAX_GROUP_ICON_TAKEOVERS &&
+                now - lastApplyAt < TAKEOVER_QUIET_INTERVAL_MILLIS
+            ) {
+                return true
+            }
+            if (reapplies == MAX_GROUP_ICON_TAKEOVERS) {
                 diagnostics.report(
                     level = DiagnosticLevel.Warning,
                     event = DiagnosticEvent.IconReapplied,
-                    message = "宿主反复回填原始图标，放弃接管聚合摘要图标",
+                    message = "宿主反复回填原始图标，改为限速补铺（持续保持主题图标）",
                     attributes = mapOf("package" to sbn.packageName, "key" to sbn.key),
-                    occurrence = OccurrencePolicy.Once("panel:group_icon_takeover_giveup:${sbn.key}"),
+                    occurrence = OccurrencePolicy.Once("panel:group_icon_takeover_throttled:${sbn.key}"),
                 )
+            }
+            reapplies++
+            lastApplyAt = now
+            if (reapplies <= MAX_GROUP_ICON_TAKEOVERS) {
+                diagnostics.report(
+                    level = DiagnosticLevel.Debug,
+                    event = DiagnosticEvent.IconReapplied,
+                    message = "宿主在绘制前换回了原始图标，补铺聚合摘要图标",
+                    attributes = mapOf(
+                        "package" to sbn.packageName,
+                        "key" to sbn.key,
+                        "pass" to reapplies.toString(),
+                    ),
+                    occurrence = OccurrencePolicy.RateLimited("panel:group_icon_takeover", 60_000L),
+                )
+            }
+            reapply()
+            applied = icon.drawable
+            return true
+        }
+
+        override fun onViewAttachedToWindow(view: View) = Unit
+
+        override fun onViewDetachedFromWindow(view: View) = stop()
+    }
+
+    /** Blank-sheet repairs currently watching a collapsed group row, keyed by its icon view. */
+    private val summaryBlankGuards = java.util.WeakHashMap<ImageView, SummaryBlankGuard>()
+
+    /**
+     * Keeps a collapsed group row from staying on a blank sheet the host painted.
+     *
+     * The row reaches this path whenever the module has nothing to replace it with: the aggregate
+     * carries a sender photo (so the host composes "avatar + badge") or the theme icon could not be
+     * resolved. Both are fine on their own — the problem is the fallback. With no photo to compose,
+     * ColorOS paints the app's monochrome small icon, which for SMS is a solid white bubble; the
+     * host then takes the pill colour from that artwork, and the row becomes a blank white squircle
+     * beside its count badge until SystemUI restarts (a restart rebinds every row, which is why it
+     * always looks "fixed" afterwards).
+     *
+     * So the host keeps the decision, and this guard only steps in when the result is measurably
+     * empty: a flat white fill, or the app's own launcher icon in the avatar slot. A real photo is
+     * left exactly as the host drew it.
+     */
+    private fun guardSummaryIconAgainstBlank(
+        icon: ImageView,
+        row: Any?,
+        sbn: StatusBarNotification,
+        snapshot: RuntimeSnapshot,
+    ) {
+        val themed = snapshot.resolver.resolveThemeDrawableByPackage(icon.context, sbn.packageName)
+            ?: return
+        summaryBlankGuards.put(icon, SummaryBlankGuard(icon, row, sbn, snapshot, themed))?.stop()
+        summaryBlankGuards[icon]?.start()
+    }
+
+    private inner class SummaryBlankGuard(
+        private val icon: ImageView,
+        private val row: Any?,
+        private val sbn: StatusBarNotification,
+        private val snapshot: RuntimeSnapshot,
+        private val themed: Drawable,
+    ) : ViewTreeObserver.OnPreDrawListener, View.OnAttachStateChangeListener {
+
+        private var observer: ViewTreeObserver? = null
+        private var inspected: Drawable? = null
+        private var repairs = 0
+        private var lastRepairAt = 0L
+        private var stopped = false
+
+        fun start() {
+            observer = icon.viewTreeObserver
+            observer?.addOnPreDrawListener(this)
+            icon.addOnAttachStateChangeListener(this)
+        }
+
+        fun stop() {
+            if (stopped) return
+            stopped = true
+            runCatching { observer?.takeIf { it.isAlive }?.removeOnPreDrawListener(this) }
+            runCatching { icon.removeOnAttachStateChangeListener(this) }
+            if (summaryBlankGuards[icon] === this) summaryBlankGuards.remove(icon)
+        }
+
+        /**
+         * One identity compare per frame; the expensive artwork test only runs when the host
+         * actually swapped the drawable, so scrolling the shade stays cheap.
+         */
+        override fun onPreDraw(): Boolean {
+            if (stopped) return true
+            if (!icon.isAttachedToWindow || !configuration.isCurrent(snapshot)) {
                 stop()
                 return true
             }
-            reapplies++
-            diagnostics.report(
-                level = DiagnosticLevel.Debug,
-                event = DiagnosticEvent.IconReapplied,
-                message = "宿主在绘制前换回了原始图标，补铺聚合摘要图标",
-                attributes = mapOf(
-                    "package" to sbn.packageName,
-                    "key" to sbn.key,
-                    "pass" to reapplies.toString(),
-                ),
-                occurrence = OccurrencePolicy.RateLimited("panel:group_icon_takeover", 60_000L),
+            val key = runCatching { row?.let { statusBarNotificationFromRow(it) }?.key }.getOrNull()
+            if (key != sbn.key) {
+                stop()
+                return true
+            }
+            val current = icon.drawable ?: return true
+            if (current === themed || current === inspected) return true
+            inspected = current
+            val blank = HostAvatarPresence.looksBlank(current)
+            val placeholder = HostAvatarPresence.looksLikeLauncherIcon(
+                context = icon.context,
+                packageName = sbn.packageName,
+                drawable = current,
             )
-            reapply()
-            applied = icon.drawable
+            if (!blank && !placeholder) return true
+            val now = SystemClock.uptimeMillis()
+            if (repairs >= MAX_GROUP_ICON_TAKEOVERS &&
+                now - lastRepairAt < TAKEOVER_QUIET_INTERVAL_MILLIS
+            ) {
+                return true
+            }
+            lastRepairAt = now
+            repairs++
+            if (repairs == 1) {
+                diagnostics.report(
+                    level = DiagnosticLevel.Debug,
+                    event = DiagnosticEvent.PackageIconResolved,
+                    message = "聚合摘要被宿主画成空白，补铺主题图标",
+                    attributes = mapOf(
+                        "package" to sbn.packageName,
+                        "key" to sbn.key,
+                        "blank" to blank.toString(),
+                        "placeholder" to placeholder.toString(),
+                    ),
+                    occurrence = OccurrencePolicy.Once("panel:summary_blank_repair:${sbn.key}"),
+                )
+            }
+            icon.imageTintList = null
+            icon.colorFilter = null
+            icon.setImageDrawable(themed)
             return true
         }
 
@@ -1490,7 +1630,13 @@ internal class NotificationPanelHooks(
                 context = iconView.context,
                 sbn = sbn,
                 originalSmallIcon = sbn.originalSmallIcon(diagnostics, snapshot.revision),
-            ) ?: return
+            )
+            if (plan == null) {
+                // Nothing to write: the host keeps the row, and the guard only intervenes if what
+                // it paints is empty artwork.
+                guardSummaryIconAgainstBlank(iconView, entry, sbn, snapshot)
+                return
+            }
             iconView.applyRenderPlan(plan, PanelIconTarget.OplusGroupSummary)
         } catch (exception: Exception) {
             diagnostics.runtimeFailure(
@@ -1753,11 +1899,15 @@ internal class NotificationPanelHooks(
         const val MAX_ICON_VERIFY_PASSES = 4
 
         /**
-         * How many times the draw-time guard may put the group icon back. The host repaints a
-         * collapsed group a bounded number of times (bind, expand/collapse, theme change), so a
-         * dozen recovers from any of those without risking a fight it can never win.
+         * How many repair passes the draw-time guard logs before it goes quiet. It never stops
+         * guarding: the host repaints a collapsed group from its own coroutine, and whichever
+         * write lands last is what the user sees, so bailing out leaves the row on the host's
+         * blank composition until SystemUI restarts.
          */
         const val MAX_GROUP_ICON_TAKEOVERS = 12
+
+        /** Repair interval once the guard is past its logged burst, to keep repaints bounded. */
+        const val TAKEOVER_QUIET_INTERVAL_MILLIS = 200L
 
         /**
          * Retry schedule for a row whose sender photo was not attached yet when it was first bound.

@@ -120,7 +120,42 @@ internal class ThemeIconProvider(
         }
     }
 
+    /**
+     * Resolves the desktop theme icon for a package, rejecting a "white sheet" answer.
+     *
+     * The theme engine sometimes hands back the icon *before* its background layer is ready: what
+     * comes back is a plain white area (the SMS theme icon is a white bubble, the ABC one a white
+     * disc) and it is cached like any other result. Once that artwork reaches the host it is frozen
+     * into its own cache for the whole lifetime of the notification, so the row shows a blank white
+     * squircle until SystemUI restarts — the "聚合图标又变白了" report. There is no way to tell a
+     * genuinely white theme icon from a half-loaded one by looking at the pixels alone, so the
+     * lookup is simply repeated once and then treated as a miss: the caller then keeps whatever
+     * icon the host already had instead of pinning a blank.
+     */
     private fun loadThemeBitmap(
+        context: Context,
+        packageName: String,
+        user: UserHandle?,
+        userId: Int,
+    ): Bitmap? {
+        val first = loadThemeBitmapOnce(context, packageName, user, userId) ?: return null
+        if (!isBlankArtworkSheet(first)) return first
+        val retried = loadThemeBitmapOnce(context, packageName, user, userId)
+        if (retried != null && !isBlankArtworkSheet(retried)) return retried
+        diagnostics.report(
+            level = DiagnosticLevel.Warning,
+            event = DiagnosticEvent.ThemeIconBlank,
+            message = "主题图标接口返回了纯白图块，本次保留原始图标（稍后自动重试）",
+            attributes = mapOf(
+                "package" to packageName,
+                "retried" to (retried != null).toString(),
+            ),
+            occurrence = OccurrencePolicy.RateLimited("theme_icon:blank:$packageName", 300_000L),
+        )
+        return null
+    }
+
+    private fun loadThemeBitmapOnce(
         context: Context,
         packageName: String,
         user: UserHandle?,
@@ -143,6 +178,44 @@ internal class ThemeIconProvider(
             )
             null
         }
+    }
+
+    /**
+     * True when the bitmap is one flat near-white fill: no picture at all, just the empty sheet the
+     * theme engine paints before its layers are loaded. Sampled on a coarse grid — this runs on
+     * every cache miss and must stay far cheaper than decoding the icon again.
+     */
+    private fun isBlankArtworkSheet(bitmap: Bitmap): Boolean {
+        val step = (minOf(bitmap.width, bitmap.height) / BLANK_SAMPLE_GRID).coerceAtLeast(1)
+        var min = Double.MAX_VALUE
+        var max = -Double.MAX_VALUE
+        var total = 0.0
+        var count = 0
+        var y = 0
+        while (y < bitmap.height) {
+            var x = 0
+            while (x < bitmap.width) {
+                val pixel = bitmap.getPixel(x, y)
+                // Transparent pixels carry no artwork: skipped instead of counted as white.
+                if ((pixel ushr 24) >= BLANK_OPAQUE_ALPHA) {
+                    val luminance = 0.299 * ((pixel ushr 16) and 0xFF) +
+                        0.587 * ((pixel ushr 8) and 0xFF) +
+                        0.114 * (pixel and 0xFF)
+                    if (luminance < min) min = luminance
+                    if (luminance > max) max = luminance
+                    total += luminance
+                    count++
+                }
+                x += step
+            }
+            y += step
+        }
+        if (count == 0) return true
+        val mean = total / count
+        val spread = max - min
+        // Only a sheet that is *white* and flat counts. A vividly coloured flat icon (a solid logo
+        // plate) or a dark one passes, so no real theme icon is dropped by this check.
+        return spread < BLANK_SPREAD_TOLERANCE && mean > BLANK_WHITE_LUMINANCE
     }
 
     private fun loadThemeDrawable(
@@ -505,5 +578,17 @@ internal class ThemeIconProvider(
          * SystemUI's own notifications take.
          */
         const val USER_HANDLE_ALL = -1
+
+        /** Samples per axis for the "is this a blank sheet" check. */
+        const val BLANK_SAMPLE_GRID = 16
+
+        /** Alpha below which a pixel counts as transparent when judging a theme icon. */
+        const val BLANK_OPAQUE_ALPHA = 32
+
+        /** Luminance spread below which the artwork is one flat fill instead of a picture. */
+        const val BLANK_SPREAD_TOLERANCE = 8.0
+
+        /** Mean luminance above which that flat fill is white, i.e. the failure this check targets. */
+        const val BLANK_WHITE_LUMINANCE = 225.0
     }
 }

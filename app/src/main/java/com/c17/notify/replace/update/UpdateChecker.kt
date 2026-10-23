@@ -83,8 +83,12 @@ object UpdateChecker {
         }
     }
 
+    /**
+     * Strips the tag decoration ("v", "re", "-cn") so `re.2` can be compared with `re.1`.
+     * Any non-numeric prefix is dropped instead of being read as a zero component.
+     */
     private fun normalizeVersion(raw: String): String =
-        raw.trim().removePrefix("v").removePrefix("V").substringBefore("-").trim()
+        raw.trim().substringBefore("-").dropWhile { !it.isDigit() }.trim()
 
     private fun compareVersion(left: String, right: String): Int {
         val leftParts = left.split('.').map { it.toIntOrNull() ?: 0 }

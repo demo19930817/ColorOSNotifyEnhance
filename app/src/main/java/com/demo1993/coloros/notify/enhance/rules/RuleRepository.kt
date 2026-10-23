@@ -35,6 +35,13 @@ object RuleRepository {
             cause = cause,
         )
 
+        /** The repository slug is not `owner/repository`, so no URL can be built at all. */
+        class InvalidSource(repository: String) : SyncFailure(
+            code = "invalid_source",
+            userMessage = "规则存储库格式无效，应为 owner/repository",
+            message = "Rule source repository '$repository' is not a valid owner/repository slug",
+        )
+
         class LocalSave(cause: Exception) : SyncFailure(
             code = "local_save",
             userMessage = "规则保存失败",
@@ -59,11 +66,14 @@ object RuleRepository {
         .callTimeout(180, TimeUnit.SECONDS)
         .build()
 
-    fun syncRules(onResult: (Result<SyncResult>) -> Unit) {
+    fun syncRules(
+        source: RuleSourceConfig,
+        onResult: (Result<SyncResult>) -> Unit,
+    ) {
         try {
             executor.execute {
                 val result = try {
-                    Result.success(syncBlocking())
+                    Result.success(syncBlocking(source))
                 } catch (exception: Exception) {
                     logFailure(exception)
                     Result.failure(exception)
@@ -81,9 +91,13 @@ object RuleRepository {
         MainThreadCallbacks.dispatch("rules_sync") { callback(result) }
     }
 
-    private fun syncBlocking(): SyncResult {
+    private fun syncBlocking(source: RuleSourceConfig): SyncResult {
+        if (!source.isValidRepository) {
+            throw SyncFailure.InvalidSource(source.repository)
+        }
+        val plan = RuleSourcePlan(source)
         val merged = try {
-            AnipRuleSource.sync(httpClient)
+            AnipRuleSource.sync(httpClient, plan)
         } catch (exception: RuleRepository.SyncFailure) {
             throw exception
         } catch (exception: Exception) {
@@ -103,7 +117,11 @@ object RuleRepository {
             level = DiagnosticLevel.Info,
             event = DiagnosticEvent.RulesDownloaded,
             message = "Rule catalogs downloaded and validated",
-            attributes = mapOf("rules" to catalog.size),
+            attributes = mapOf(
+                "rules" to catalog.size,
+                "repository" to plan.repository,
+                "source" to plan.winningLabel,
+            ),
         )
         return SyncResult(count = catalog.size, updatedAt = updatedAt)
     }

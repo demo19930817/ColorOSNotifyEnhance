@@ -7,6 +7,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import com.demo1993.coloros.notify.enhance.rules.IconRule
+import com.demo1993.coloros.notify.enhance.rules.RuleSourceConfig
 import com.demo1993.coloros.notify.enhance.ui.about.AboutScreen
 import com.demo1993.coloros.notify.enhance.ui.home.HomeScreen
 import com.demo1993.coloros.notify.enhance.ui.home.HomeScreenState
@@ -24,7 +25,7 @@ fun ColorOSNotifyEnhanceRoot(
     ruleState: RuleListState,
     themeConfig: ThemeConfig,
     onThemeConfigChange: (ThemeConfig) -> Unit,
-    onSyncRules: ((String) -> Unit) -> Unit,
+    onSyncRules: (RuleSourceConfig, (String) -> Unit) -> Unit,
     onRestartSystemUi: ((String) -> Unit) -> Unit,
     onRulesEnabledChange: (Boolean, (String) -> Unit) -> Unit,
     onPanelIconReplacementEnabledChange: (Boolean, (String) -> Unit) -> Unit,

@@ -1,6 +1,5 @@
 package com.demo1993.coloros.notify.enhance.rules
 
-import com.demo1993.coloros.notify.enhance.core.ModuleInfo
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
@@ -12,56 +11,55 @@ import java.util.concurrent.TimeUnit
 
 internal object AnipRuleSource {
 
-    private enum class CatalogKind(val resSegment: String) {
-        App("icons/app/res"),
-        Game("icons/game/res"),
-        ColorOs("icons/system/coloros/res"),
+    /**
+     * The three catalogs of the ANIP repository. [manifestSegment] is the index file, [resSegment]
+     * the directory holding one PNG per package.
+     */
+    private enum class CatalogKind(
+        val manifestSegment: String,
+        val resSegment: String,
+    ) {
+        App("icons/app/manifest.json", "icons/app/res"),
+        Game("icons/game/manifest.json", "icons/game/res"),
+        ColorOs("icons/system/coloros/manifest.json", "icons/system/coloros/res"),
     }
 
-    fun sync(httpClient: OkHttpClient): String {
+    fun sync(httpClient: OkHttpClient, plan: RuleSourcePlan): String {
         val colorOsManifest = downloadManifest(
             httpClient = httpClient,
-            urls = ModuleInfo.ANIP_COLOROS_MANIFEST_URLS,
+            plan = plan,
+            path = CatalogKind.ColorOs.manifestSegment,
             source = "ColorOS",
         )
         val gameManifest = downloadManifest(
             httpClient = httpClient,
-            urls = ModuleInfo.ANIP_GAME_MANIFEST_URLS,
+            plan = plan,
+            path = CatalogKind.Game.manifestSegment,
             source = "games",
         )
         val appManifest = downloadManifest(
             httpClient = httpClient,
-            urls = ModuleInfo.ANIP_APP_MANIFEST_URLS,
+            plan = plan,
+            path = CatalogKind.App.manifestSegment,
             source = "applications",
         )
         val entries = mergeManifests(colorOsManifest, gameManifest, appManifest)
-        val inputs = downloadRuleInputs(httpClient, entries)
+        val inputs = downloadRuleInputs(httpClient, plan, entries)
         check(inputs.isNotEmpty()) { "No rule entries could be downloaded from ANIP" }
         return inputsToJson(inputs)
     }
 
     private fun downloadManifest(
         httpClient: OkHttpClient,
-        urls: List<String>,
+        plan: RuleSourcePlan,
+        path: String,
         source: String,
-    ): JSONObject {
-        var firstFailure: Exception? = null
-        for (url in urls) {
-            try {
-                val json = downloadText(httpClient, url, RulePayloadIO.MAX_PAYLOAD_BYTES)
-                return JSONObject(json)
-            } catch (exception: Exception) {
-                if (firstFailure == null) {
-                    firstFailure = exception
-                } else {
-                    firstFailure.addSuppressed(exception)
-                }
-            }
+    ): JSONObject = try {
+        plan.fetch(path) { url ->
+            JSONObject(downloadText(httpClient, url, RulePayloadIO.MAX_PAYLOAD_BYTES))
         }
-        throw RuleRepository.SyncFailure.Download(
-            source,
-            firstFailure ?: IllegalStateException("No manifest download attempts"),
-        )
+    } catch (exception: Exception) {
+        throw RuleRepository.SyncFailure.Download(source, exception)
     }
 
     private fun mergeManifests(
@@ -88,6 +86,7 @@ internal object AnipRuleSource {
 
     private fun downloadRuleInputs(
         httpClient: OkHttpClient,
+        plan: RuleSourcePlan,
         entries: Map<String, CatalogEntry>,
     ): List<RuleInput> {
         val executor = Executors.newFixedThreadPool(DOWNLOAD_PARALLELISM)
@@ -95,7 +94,7 @@ internal object AnipRuleSource {
             val futures = ArrayList<Future<RuleInput?>>(entries.size)
             entries.values.forEach { entry ->
                 futures += executor.submit<RuleInput?> {
-                    buildRuleInput(httpClient, entries, entry)
+                    buildRuleInput(httpClient, plan, entries, entry)
                 }
             }
             return futures.mapNotNull { future ->
@@ -112,12 +111,13 @@ internal object AnipRuleSource {
 
     private fun buildRuleInput(
         httpClient: OkHttpClient,
+        plan: RuleSourcePlan,
         entries: Map<String, CatalogEntry>,
         entry: CatalogEntry,
     ): RuleInput? {
         val iconPackage = resolveIconPackage(entries, entry.packageName) ?: return null
         val iconKind = entries[iconPackage]?.kind ?: entry.kind
-        val iconBytes = downloadIconBytes(httpClient, iconKind, iconPackage) ?: return null
+        val iconBytes = downloadIconBytes(httpClient, plan, iconKind, iconPackage) ?: return null
         val sourceEntry = entries[iconPackage]?.raw ?: entry.raw
         val label = readLabel(entry.raw).ifBlank { readLabel(sourceEntry) }.ifBlank { entry.packageName }
         val color = readColor(entry.raw).ifBlank { readColor(sourceEntry) }
@@ -152,30 +152,16 @@ internal object AnipRuleSource {
 
     private fun downloadIconBytes(
         httpClient: OkHttpClient,
+        plan: RuleSourcePlan,
         kind: CatalogKind,
         packageName: String,
-    ): ByteArray? {
-        var firstFailure: Exception? = null
-        for (url in iconUrls(kind, packageName)) {
-            try {
-                return downloadBytes(httpClient, url, MAX_ICON_BYTES)
-            } catch (exception: Exception) {
-                if (firstFailure == null) {
-                    firstFailure = exception
-                } else {
-                    firstFailure.addSuppressed(exception)
-                }
-            }
+    ): ByteArray? = try {
+        plan.fetch("${kind.resSegment}/$packageName.png") { url ->
+            downloadBytes(httpClient, url, MAX_ICON_BYTES)
         }
-        return null
-    }
-
-    private fun iconUrls(kind: CatalogKind, packageName: String): List<String> {
-        val fileName = "$packageName.png"
-        return listOf(
-            "${ModuleInfo.ANIP_RAW_BASE}/${kind.resSegment}/$fileName",
-            "${ModuleInfo.ANIP_CDN_BASE}/${kind.resSegment}/$fileName",
-        )
+    } catch (_: Exception) {
+        // One missing icon must not fail the whole catalog; the app simply keeps its own artwork.
+        null
     }
 
     private fun downloadText(

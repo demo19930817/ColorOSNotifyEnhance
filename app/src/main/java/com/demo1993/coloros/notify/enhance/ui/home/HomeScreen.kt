@@ -1,8 +1,12 @@
 package com.demo1993.coloros.notify.enhance.ui.home
 
 import android.annotation.SuppressLint
+import android.content.Context
+import android.content.Intent
 import android.content.res.Configuration
+import android.net.Uri
 import android.os.Build
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -20,6 +24,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.foundation.text.input.rememberTextFieldState
+import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -28,6 +36,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -41,10 +50,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.demo1993.coloros.notify.enhance.BuildConfig
 import com.demo1993.coloros.notify.enhance.R
+import com.demo1993.coloros.notify.enhance.core.ModuleInfo
 import com.demo1993.coloros.notify.enhance.diagnostics.AppDiagnostics
 import com.demo1993.coloros.notify.enhance.diagnostics.DiagnosticEvent
 import com.demo1993.coloros.notify.enhance.diagnostics.DiagnosticLevel
 import com.demo1993.coloros.notify.enhance.diagnostics.OccurrencePolicy
+import com.demo1993.coloros.notify.enhance.rules.RuleSourceConfig
+import com.demo1993.coloros.notify.enhance.rules.RuleSourceType
+import com.demo1993.coloros.notify.enhance.rules.readRuleSourceConfig
+import com.demo1993.coloros.notify.enhance.rules.writeRuleSourceConfig
 import com.demo1993.coloros.notify.enhance.ui.component.MiuixBlurredTopBar
 import com.demo1993.coloros.notify.enhance.ui.component.PreferenceGroup
 import com.demo1993.coloros.notify.enhance.ui.component.rememberMiuixPageBackdrop
@@ -60,6 +74,7 @@ import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.SnackbarHostState
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
+import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.blur.layerBackdrop
 import top.yukonga.miuix.kmp.icon.MiuixIcons
@@ -80,17 +95,43 @@ fun HomeScreen(
     state: HomeScreenState,
     bottomPadding: Dp,
     snackbarHostState: SnackbarHostState,
-    onSyncRules: ((String) -> Unit) -> Unit,
+    onSyncRules: (RuleSourceConfig, (String) -> Unit) -> Unit,
     onRestartSystemUi: ((String) -> Unit) -> Unit,
 ) {
     val scrollBehavior = MiuixScrollBehavior()
     val backdrop = rememberMiuixPageBackdrop()
     val surfaceColor = MiuixTheme.colorScheme.surface
     var showRestartDialog by remember { mutableStateOf(false) }
+    var showSourceDialog by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    var ruleSource by remember { mutableStateOf(readRuleSourceConfig(context)) }
+    var pendingSourceType by remember { mutableStateOf(ruleSource.type) }
+    var repositoryInvalid by remember { mutableStateOf(false) }
+    val repositoryState = rememberTextFieldState()
     val scope = rememberCoroutineScope()
 
     fun showSnackbar(message: String) {
         scope.launch { snackbarHostState.showSnackbar(message) }
+    }
+
+    fun openSourceDialog() {
+        pendingSourceType = ruleSource.type
+        repositoryInvalid = false
+        repositoryState.setTextAndPlaceCursorAtEnd(ruleSource.repository)
+        showSourceDialog = true
+    }
+
+    fun confirmSourceAndSync() {
+        val repository = RuleSourceConfig.normalizeRepository(repositoryState.text.toString())
+        if (repository == null) {
+            repositoryInvalid = true
+            return
+        }
+        val config = RuleSourceConfig(type = pendingSourceType, repository = repository)
+        writeRuleSourceConfig(context, config)
+        ruleSource = config
+        showSourceDialog = false
+        onSyncRules(config, ::showSnackbar)
     }
 
     Scaffold(
@@ -122,7 +163,8 @@ fun HomeScreen(
                 PreferenceGroup {
                     RulesCard(
                         state = state,
-                        onSyncRules = { onSyncRules(::showSnackbar) },
+                        sourceType = ruleSource.type,
+                        onSyncRules = ::openSourceDialog,
                         onRestartClick = { showRestartDialog = true },
                     )
                 }
@@ -139,6 +181,159 @@ fun HomeScreen(
             onRestartSystemUi(::showSnackbar)
         },
     )
+
+    RuleSourceDialog(
+        show = showSourceDialog,
+        selected = pendingSourceType,
+        repositoryState = repositoryState,
+        repositoryInvalid = repositoryInvalid,
+        onSelect = {
+            pendingSourceType = it
+            repositoryInvalid = false
+        },
+        onDismiss = { showSourceDialog = false },
+        onOpenCloud = { openUrl(ModuleInfo.ANIP_PROJECT_URL) },
+        onConfirm = ::confirmSourceAndSync,
+    )
+}
+
+private fun Context.openUrl(url: String) {
+    runCatching {
+        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }
+}
+
+/**
+ * Source picker shown before a rule sync.
+ *
+ * Same shape as `fankes/ColorOSNotifyIcon`'s "同步列表" sheet: pick the route that reaches GitHub on
+ * the current network, optionally point at another repository, then confirm to start the download.
+ * The choice is what "更新规则" uses from then on, so it only has to be made once per network.
+ */
+@Composable
+private fun RuleSourceDialog(
+    show: Boolean,
+    selected: RuleSourceType,
+    repositoryState: TextFieldState,
+    repositoryInvalid: Boolean,
+    onSelect: (RuleSourceType) -> Unit,
+    onDismiss: () -> Unit,
+    onOpenCloud: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    // The error clears itself once the text becomes a valid slug again, so no edit callback is needed.
+    val showRepositoryError =
+        repositoryInvalid && RuleSourceConfig.normalizeRepository(repositoryState.text.toString()) == null
+    OverlayDialog(
+        show = show,
+        title = stringResource(R.string.dialog_rule_source_title),
+        summary = stringResource(R.string.dialog_rule_source_summary),
+        onDismissRequest = onDismiss,
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            RuleSourceType.entries.forEach { type ->
+                RuleSourceOptionRow(
+                    label = stringResource(ruleSourceLabelRes(type)),
+                    hint = stringResource(ruleSourceHintRes(type)),
+                    selected = type == selected,
+                    onClick = { onSelect(type) },
+                )
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        Text(
+            text = stringResource(R.string.dialog_rule_source_repository),
+            fontSize = MiuixTheme.textStyles.body1.fontSize,
+            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+        )
+        Spacer(Modifier.height(6.dp))
+        TextField(
+            state = repositoryState,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        if (showRepositoryError) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = stringResource(R.string.dialog_rule_source_repository_invalid),
+                fontSize = MiuixTheme.textStyles.body2.fontSize,
+                color = MiuixTheme.colorScheme.primary,
+            )
+        }
+        Spacer(Modifier.height(12.dp))
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextButton(
+                text = stringResource(R.string.dialog_cancel),
+                onClick = onDismiss,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(
+                text = stringResource(R.string.dialog_confirm_sync),
+                onClick = onConfirm,
+                modifier = Modifier.weight(1f),
+                colors = ButtonDefaults.textButtonColorsPrimary(),
+            )
+        }
+        TextButton(
+            text = stringResource(R.string.dialog_rule_source_cloud),
+            onClick = onOpenCloud,
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
+}
+
+@Composable
+private fun RuleSourceOptionRow(
+    label: String,
+    hint: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = label,
+                fontSize = MiuixTheme.textStyles.body1.fontSize,
+                color = if (selected) {
+                    MiuixTheme.colorScheme.primary
+                } else {
+                    MiuixTheme.colorScheme.onSurface
+                },
+            )
+            Text(
+                text = hint,
+                fontSize = MiuixTheme.textStyles.body2.fontSize,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        if (selected) {
+            Text(
+                text = "✓",
+                fontSize = MiuixTheme.textStyles.body1.fontSize,
+                color = MiuixTheme.colorScheme.primary,
+            )
+        }
+    }
+}
+
+private fun ruleSourceLabelRes(type: RuleSourceType): Int = when (type) {
+    RuleSourceType.GhProxy1 -> R.string.rule_source_gh_proxy_1
+    RuleSourceType.GhProxy2 -> R.string.rule_source_gh_proxy_2
+    RuleSourceType.GitHubDirect -> R.string.rule_source_direct
+}
+
+private fun ruleSourceHintRes(type: RuleSourceType): Int = when (type) {
+    RuleSourceType.GhProxy1 -> R.string.rule_source_gh_proxy_1_hint
+    RuleSourceType.GhProxy2 -> R.string.rule_source_gh_proxy_2_hint
+    RuleSourceType.GitHubDirect -> R.string.rule_source_direct_hint
 }
 
 @Composable
@@ -368,6 +563,7 @@ private fun InfoText(
 @Composable
 private fun RulesCard(
     state: HomeScreenState,
+    sourceType: RuleSourceType,
     onSyncRules: () -> Unit,
     onRestartClick: () -> Unit,
 ) {
@@ -379,6 +575,15 @@ private fun RulesCard(
             null
         }
     }
+    val syncSummary = if (lastSyncText == null) {
+        stringResource(R.string.label_rules_never_synced)
+    } else {
+        stringResource(R.string.label_rules_last_sync, lastSyncText)
+    }
+    val sourceSummary = stringResource(
+        R.string.label_rules_source,
+        stringResource(ruleSourceLabelRes(sourceType)),
+    )
 
     BasicComponent(
         title = when (state.syncStage) {
@@ -386,11 +591,7 @@ private fun RulesCard(
             RuleSyncStage.SyncingRules -> stringResource(R.string.button_syncing_rules)
             RuleSyncStage.MirroringRemote -> stringResource(R.string.button_mirroring_rules)
         },
-        summary = if (lastSyncText == null) {
-            stringResource(R.string.label_rules_never_synced)
-        } else {
-            stringResource(R.string.label_rules_last_sync, lastSyncText)
-        },
+        summary = "$syncSummary · $sourceSummary",
         endActions = if (!state.isSyncing) {
             {
                 Icon(
@@ -544,7 +745,7 @@ private fun HomeScreenPreview(state: HomeScreenState) {
         state = state,
         bottomPadding = 0.dp,
         snackbarHostState = snackbarHostState,
-        onSyncRules = {},
+        onSyncRules = { _, _ -> },
         onRestartSystemUi = {},
     )
 }

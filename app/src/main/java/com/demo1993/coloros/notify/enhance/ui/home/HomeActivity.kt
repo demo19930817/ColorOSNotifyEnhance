@@ -23,6 +23,7 @@ import com.demo1993.coloros.notify.enhance.framework.SystemUiRestarter
 import com.demo1993.coloros.notify.enhance.framework.XposedServiceBridge
 import com.demo1993.coloros.notify.enhance.rules.IconRule
 import com.demo1993.coloros.notify.enhance.rules.RuleRepository
+import com.demo1993.coloros.notify.enhance.rules.RuleSourceConfig
 import com.demo1993.coloros.notify.enhance.rules.RuleStore
 import com.demo1993.coloros.notify.enhance.ui.main.ColorOSNotifyEnhanceRoot
 import com.demo1993.coloros.notify.enhance.ui.rules.InstalledAppChoice
@@ -189,10 +190,10 @@ class HomeActivity : ComponentActivity() {
         if (updated) refreshLocalState()
     }
 
-    private fun syncRules(onShowMessage: (String) -> Unit) {
+    private fun syncRules(source: RuleSourceConfig, onShowMessage: (String) -> Unit) {
         requireFrameworkService(onShowMessage) ?: return
         uiState = uiState.copy(syncStage = RuleSyncStage.SyncingRules)
-        RuleRepository.syncRules { result ->
+        RuleRepository.syncRules(source) { result ->
             result.onSuccess { syncResult ->
                 refreshLocalState()
                 val service = currentService

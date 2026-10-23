@@ -153,6 +153,7 @@
     <string name="message_installed_rules_enabled_all">已为 %1$d 个应用开启全部替换</string>
     <string name="message_installed_rules_disabled_all">已为 %1$d 个应用关闭全部替换</string>
     <string name="message_restart_requested">已请求重启 SystemUI</string>
+    <string name="message_restart_requested_with_games">已请求重启 SystemUI，正在运行的游戏助手也已重启</string>
     <string name="message_restart_failed">重启失败：%1$s</string>
     <string name="message_restart_failed_generic">无法执行 SystemUI 重启命令</string>
     <string name="message_launcher_icon_hidden">已隐藏，可从 LSPosed 管理器打开；若图标仍显示，请关闭“强制显示桌面图标”</string>

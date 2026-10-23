@@ -17,23 +17,47 @@ object SystemUiRestarter {
         val userMessage: String = message
     }
 
+    /**
+     * [gameAssistantRestarted] is true when a game assistant process was actually running and has
+     * been killed alongside SystemUI, so its own Xposed hooks reload from the new module code.
+     */
+    class RestartOutcome internal constructor(val gameAssistantRestarted: Boolean)
+
     private val executor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "systemui-restarter")
     }
+
+    /**
+     * The game assistant runs its own copy of the hooks, so restarting SystemUI alone leaves it on
+     * stale code (the theme icons it draws keep the old behaviour until it is killed by the system).
+     * Killing it here is enough: the assistant is started again by the game launcher on demand.
+     */
     private val restartCommand = """
         pid=$(/system/bin/pidof com.android.systemui 2>/dev/null)
+        restarted=1
         if [ -n "${'$'}pid" ]; then
           /system/bin/kill -9 ${'$'}pid
-          echo "killed:${'$'}pid"
-          exit 0
+          echo "systemui:${'$'}pid"
+        elif /system/bin/pkill -f com.android.systemui >/dev/null 2>&1; then
+          echo "systemui:pkill"
+        elif /system/bin/killall com.android.systemui >/dev/null 2>&1; then
+          echo "systemui:killall"
+        else
+          echo "systemui:not_found"
+          restarted=0
         fi
-        /system/bin/pkill -f com.android.systemui >/dev/null 2>&1 && { echo "pkill"; exit 0; }
-        /system/bin/killall com.android.systemui >/dev/null 2>&1 && { echo "killall"; exit 0; }
-        echo "not_found"
+        games=$(/system/bin/pidof com.oplus.games 2>/dev/null)
+        if [ -n "${'$'}games" ]; then
+          /system/bin/kill -9 ${'$'}games >/dev/null 2>&1
+          echo "games:${'$'}games"
+        else
+          echo "games_idle"
+        fi
+        if [ "${'$'}restarted" = "1" ]; then exit 0; fi
         exit 1
     """.trimIndent()
 
-    fun restartSystemUi(onResult: (Result<Unit>) -> Unit) {
+    fun restartSystemUi(onResult: (Result<RestartOutcome>) -> Unit) {
         try {
             executor.execute {
                 deliver(restartResult(), onResult)
@@ -43,19 +67,20 @@ object SystemUiRestarter {
         }
     }
 
-    private fun restartResult(): Result<Unit> = try {
-        restartBlocking()
+    private fun restartResult(): Result<RestartOutcome> = try {
+        val outcome = RestartOutcome(gameAssistantRestarted = restartBlocking())
         AppDiagnostics.logger.report(
             level = DiagnosticLevel.Info,
             event = DiagnosticEvent.SystemUiRestarted,
             message = "SystemUI restart requested",
+            attributes = mapOf("game_assistant" to if (outcome.gameAssistantRestarted) "restarted" else "idle"),
         )
-        Result.success(Unit)
+        Result.success(outcome)
     } catch (exception: Exception) {
         failureResult(exception)
     }
 
-    private fun failureResult(cause: Exception): Result<Unit> {
+    private fun failureResult(cause: Exception): Result<RestartOutcome> {
         if (cause is InterruptedException) Thread.currentThread().interrupt()
         val failure = RestartFailure(cause, userMessageFor(cause))
         AppDiagnostics.logger.report(
@@ -67,11 +92,12 @@ object SystemUiRestarter {
         return Result.failure(failure)
     }
 
-    private fun deliver(result: Result<Unit>, callback: (Result<Unit>) -> Unit) {
+    private fun deliver(result: Result<RestartOutcome>, callback: (Result<RestartOutcome>) -> Unit) {
         MainThreadCallbacks.dispatch("systemui_restart") { callback(result) }
     }
 
-    private fun restartBlocking() {
+    /** Runs the kill script and reports whether a game assistant process was terminated with it. */
+    private fun restartBlocking(): Boolean {
         val suCommand = resolveSuCommand()
         val process = ProcessBuilder(suCommand, "-c", restartCommand)
             .redirectErrorStream(true)
@@ -85,6 +111,7 @@ object SystemUiRestarter {
             check(process.exitValue() == 0) {
                 "SystemUI restart command exited with ${process.exitValue()}; output=$output"
             }
+            return output.lineSequence().any { it.startsWith(GAMES_KILLED_PREFIX) }
         } finally {
             if (process.isAlive) process.destroyForcibly()
         }
@@ -120,4 +147,7 @@ object SystemUiRestarter {
     }
 
     private const val RESTART_TIMEOUT_SECONDS = 10L
+
+    /** Prefix the kill script prints for the game assistant line, used to detect a real kill. */
+    private const val GAMES_KILLED_PREFIX = "games:"
 }

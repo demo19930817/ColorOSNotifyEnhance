@@ -254,8 +254,16 @@ class HomeActivity : ComponentActivity() {
 
     private fun restartSystemUiDirectly(onShowMessage: (String) -> Unit) {
         SystemUiRestarter.restartSystemUi { result ->
-            result.onSuccess {
-                onShowMessage(getString(R.string.message_restart_requested))
+            result.onSuccess { outcome ->
+                onShowMessage(
+                    getString(
+                        if (outcome.gameAssistantRestarted) {
+                            R.string.message_restart_requested_with_games
+                        } else {
+                            R.string.message_restart_requested
+                        }
+                    )
+                )
             }.onFailure {
                 val userMessage = (it as? SystemUiRestarter.RestartFailure)?.userMessage
                     ?: getString(R.string.message_restart_failed_generic)

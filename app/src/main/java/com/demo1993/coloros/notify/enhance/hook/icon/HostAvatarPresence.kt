@@ -100,29 +100,71 @@ internal object HostAvatarPresence {
      * other. `Person` / messaging-style notifications keep yielding without the pixel check: on
      * those the host reads the avatar from its own contact store, not from `largeIcon`.
      */
-    fun canRenderAvatar(context: Context?, sbn: StatusBarNotification?): Boolean =
-        evaluate(context, sbn).renderable
+    fun canRenderAvatar(
+        context: Context?,
+        sbn: StatusBarNotification?,
+        allowGroupSummaryAvatar: Boolean = false,
+    ): Boolean = evaluate(context, sbn, allowGroupSummaryAvatar).renderable
 
-    fun evaluate(context: Context?, sbn: StatusBarNotification?): Verdict {
+    /**
+     * @param allowGroupSummaryAvatar also ask the artwork question for a row the app flagged as a
+     * group summary. Aggregated rows (WeChat's "[2条] …") are summaries by definition, yet the
+     * headline account behind them can still ship its own avatar in the large icon. The panel badge
+     * hook and the lock-screen capsule pass `true` here: on those rows the host never composes a
+     * photo itself, so the module has to compose it rather than yield. The metadata shortcuts are
+     * skipped for summaries — only the artwork can tell a photo from the app icon there.
+     */
+    fun evaluate(
+        context: Context?,
+        sbn: StatusBarNotification?,
+        allowGroupSummaryAvatar: Boolean = false,
+    ): Verdict {
         if (sbn == null) return Verdict(renderable = true, reason = "no-notification")
-        if (isGroupSummary(sbn)) return Verdict(renderable = false, reason = "group-summary")
+        val summary = isGroupSummary(sbn)
+        if (summary && !allowGroupSummaryAvatar) return Verdict(renderable = false, reason = "group-summary")
         val notification = sbn.notification ?: return Verdict(renderable = true, reason = "no-notification")
         val extras = notification.extras
-        if (hasPeople(extras)) return Verdict(renderable = true, reason = "person")
-        if (isMessaging(extras)) return Verdict(renderable = true, reason = "messaging-style")
-        if (context == null) return Verdict(mayCompose(sbn), "no-context")
+        if (!summary) {
+            if (hasPeople(extras)) return Verdict(renderable = true, reason = "person")
+            if (isMessaging(extras)) return Verdict(renderable = true, reason = "messaging-style")
+        }
+        if (context == null) {
+            return if (summary) {
+                Verdict(renderable = false, reason = "group-summary")
+            } else {
+                Verdict(mayCompose(sbn), "no-context")
+            }
+        }
         // No large icon at all: keep the old, metadata-driven answer. Some picked packages get
         // their photo from ColorOS' own contact store instead of the notification, and replacing
         // those rows is the 3.5.9 "avatar disappeared" regression.
         val largeIcon = largeIconOf(notification, extras)
-            ?: return Verdict(mayCompose(sbn), "no-large-icon")
+            ?: return if (summary) {
+                Verdict(renderable = false, reason = "group-summary")
+            } else {
+                Verdict(mayCompose(sbn), "no-large-icon")
+            }
         val cacheKey = sbn.key + "#" + System.identityHashCode(largeIcon)
-        avatarDecisions.get(cacheKey)?.let { return it }
+        avatarDecisions.get(cacheKey)?.let { return it.forRowType(summary) }
         val verdict = runCatching { judge(context, sbn.packageName, largeIcon) }
-            .getOrElse { Verdict(mayCompose(sbn), "probe-failed:${it.javaClass.simpleName}") }
+            .getOrElse {
+                if (summary) {
+                    Verdict(renderable = false, reason = "group-summary")
+                } else {
+                    Verdict(mayCompose(sbn), "probe-failed:${it.javaClass.simpleName}")
+                }
+            }
         avatarDecisions.put(cacheKey, verdict)
-        return verdict
+        return verdict.forRowType(summary)
     }
+
+    /**
+     * A summary row whose artwork is *not* a photo keeps reporting `group-summary`: the caller
+     * treats that reason as "replace with the themed icon", and a launcher-icon placeholder on an
+     * aggregated row is exactly that. Only a real photo is allowed through.
+     */
+    private fun Verdict.forRowType(summary: Boolean): Verdict =
+        if (summary && !renderable) copy(reason = "group-summary") else this
 
     /**
      * Whether a drawable the host already composed is, visually, just the app's own launcher icon.

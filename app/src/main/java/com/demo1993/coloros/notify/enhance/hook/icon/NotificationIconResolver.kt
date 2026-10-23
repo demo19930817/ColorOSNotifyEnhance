@@ -439,11 +439,12 @@ internal class NotificationIconResolver(
         context: Context,
         sbn: StatusBarNotification,
         contentSizePx: Int,
+        allowGroupSummaryAvatar: Boolean = false,
     ): Drawable? {
         if (!configLoaded) return null
         if (!NotificationIconPolicy.isAvatarPriorityPackage(policyConfig, sbn.packageName)) return null
         if (!HostAvatarPresence.contains(sbn)) return null
-        if (!HostAvatarPresence.canRenderAvatar(context, sbn)) return null
+        if (!HostAvatarPresence.canRenderAvatar(context, sbn, allowGroupSummaryAvatar)) return null
         if (!panelThemeIconsEnabled()) return null
         val badge = resolveThemeDrawableByPackage(context, sbn.packageName) ?: return null
         val avatar = try {

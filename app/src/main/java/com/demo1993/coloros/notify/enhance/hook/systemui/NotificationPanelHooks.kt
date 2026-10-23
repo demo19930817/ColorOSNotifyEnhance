@@ -443,6 +443,77 @@ internal class NotificationPanelHooks(
                     }
                     return@install hosted
                 }
+                // An aggregated row ("[2条] …") is flagged as a group summary, so the renderable
+                // branch above never takes it — and the host has no avatar composition for a
+                // summary either, it paints the plain app icon. When the headline account behind
+                // the aggregate still ships its own picture in the large icon, compose it here:
+                // otherwise the row keeps the app icon while every single-chat row beside it shows
+                // "avatar + badge".
+                if (HostAvatarPresence.isGroupSummary(rowSbn)) {
+                    val summaryVerdict = HostAvatarPresence.evaluate(
+                        context = context,
+                        sbn = rowSbn,
+                        allowGroupSummaryAvatar = true,
+                    )
+                    if (summaryVerdict.renderable) {
+                        val hosted = chain.proceed() as? Drawable
+                        val size = hosted?.intrinsicWidth?.takeIf { it > 0 }
+                            ?: snapshot.resolver.resolveThemeDrawableByPackage(context, packageName)
+                                ?.intrinsicWidth
+                                ?.takeIf { it > 0 }
+                            ?: 0
+                        val composed = if (size > 0) {
+                            snapshot.resolver.composeHostAvatarPreview(
+                                context = context,
+                                sbn = rowSbn,
+                                contentSizePx = size,
+                                allowGroupSummaryAvatar = true,
+                            )
+                        } else {
+                            null
+                        }
+                        if (composed != null) {
+                            diagnostics.report(
+                                level = DiagnosticLevel.Info,
+                                event = DiagnosticEvent.PackageIconResolved,
+                                message = "角标诊断：$packageName 聚合摘要带真头像，按头像+角标合成",
+                                attributes = mapOf(
+                                    "package" to packageName,
+                                    "key" to rowSbn.key,
+                                    "verdict" to summaryVerdict.reason,
+                                    "difference" to summaryVerdict.difference.toString(),
+                                    "size" to size.toString(),
+                                ),
+                                occurrence = OccurrencePolicy.Once("header_badge_summary_avatar:${rowSbn.key}"),
+                            )
+                            return@install composed
+                        }
+                        diagnostics.report(
+                            level = DiagnosticLevel.Debug,
+                            event = DiagnosticEvent.PackageIconResolved,
+                            message = "角标诊断：$packageName 聚合摘要判定为有头像但合成失败，回退主题图标",
+                            attributes = mapOf(
+                                "package" to packageName,
+                                "key" to rowSbn.key,
+                                "size" to size.toString(),
+                            ),
+                            occurrence = OccurrencePolicy.Once("header_badge_summary_failed:${rowSbn.key}"),
+                        )
+                    } else {
+                        diagnostics.report(
+                            level = DiagnosticLevel.Debug,
+                            event = DiagnosticEvent.PackageIconResolved,
+                            message = "角标诊断：$packageName 聚合摘要没有头像位，按主题图标替换",
+                            attributes = mapOf(
+                                "package" to packageName,
+                                "key" to rowSbn.key,
+                                "verdict" to summaryVerdict.reason,
+                                "difference" to summaryVerdict.difference.toString(),
+                            ),
+                            occurrence = OccurrencePolicy.Once("header_badge_summary_plain:${rowSbn.key}"),
+                        )
+                    }
+                }
                 // The avatar slot holds the app's own icon (or the row has no avatar at all, e.g.
                 // a group summary or an ongoing "视频通话中"): the host would compose "app icon +
                 // badge", so the configured theme icon replaces it. The host caches the theme

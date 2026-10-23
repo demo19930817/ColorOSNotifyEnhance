@@ -10,8 +10,12 @@ import android.service.notification.StatusBarNotification
 import android.view.View
 import android.widget.ImageView
 import androidx.core.graphics.drawable.toBitmap
+import com.demo1993.coloros.notify.enhance.diagnostics.DiagnosticEvent
+import com.demo1993.coloros.notify.enhance.diagnostics.DiagnosticLevel
 import com.demo1993.coloros.notify.enhance.diagnostics.Diagnostics
+import com.demo1993.coloros.notify.enhance.diagnostics.OccurrencePolicy
 import com.demo1993.coloros.notify.enhance.hook.HookRegistrar
+import com.demo1993.coloros.notify.enhance.hook.icon.HostAvatarPresence
 import com.demo1993.coloros.notify.enhance.hook.runtimeFailure
 import java.util.Collections
 import java.util.WeakHashMap
@@ -295,6 +299,60 @@ internal class LockScreenCapsuleHooks(
     ): ReplacementPlan? {
         if (!lockScreenCapsuleEnabled()) return null
         val snapshot = configuration.snapshot
+        // The lock screen is the one surface where ColorOS never composes the contact photo: the
+        // capsule draws the plain app icon, which is why the theme icon below is resolved
+        // unconditionally. A row that really carries a sender photo — WeChat's aggregated
+        // "[2条] …" included — has to keep it here too, otherwise the lock screen shows the app
+        // icon while the notification centre next to it shows "avatar + badge".
+        sbn?.let { notification ->
+            val verdict = HostAvatarPresence.evaluate(
+                context = context,
+                sbn = notification,
+                allowGroupSummaryAvatar = true,
+            )
+            diagnostics.report(
+                level = DiagnosticLevel.Debug,
+                event = DiagnosticEvent.PackageIconResolved,
+                message = "锁屏胶囊判定：${notification.packageName} verdict=${verdict.reason}",
+                attributes = mapOf(
+                    "package" to notification.packageName,
+                    "key" to notification.key,
+                    "verdict" to verdict.reason,
+                    "difference" to verdict.difference.toString(),
+                ),
+                occurrence = OccurrencePolicy.Once("lockscreen:capsule:verdict:${notification.key}"),
+            )
+            if (verdict.renderable && verdict.reason == HostAvatarPresence.REASON_CONTACT_PHOTO) {
+                val composed = snapshot.resolver.composeHostAvatarPreview(
+                    context = context,
+                    sbn = notification,
+                    contentSizePx = capsuleAvatarSizePx(context),
+                    allowGroupSummaryAvatar = true,
+                )
+                val composedBitmap = composed?.let { runCatching { it.toBitmap() }.getOrNull() }
+                if (composed != null && composedBitmap != null) {
+                    replacementDrawables.add(composed)
+                    diagnostics.report(
+                        level = DiagnosticLevel.Info,
+                        event = DiagnosticEvent.PackageIconResolved,
+                        message = "锁屏胶囊：${notification.packageName} 有真头像，按头像+角标合成",
+                        attributes = mapOf(
+                            "package" to notification.packageName,
+                            "key" to notification.key,
+                            "verdict" to verdict.reason,
+                            "difference" to verdict.difference.toString(),
+                        ),
+                        occurrence = OccurrencePolicy.Once("lockscreen:capsule:avatar:${notification.key}"),
+                    )
+                    return ReplacementPlan(
+                        snapshot = snapshot,
+                        icon = Icon.createWithBitmap(composedBitmap),
+                        drawable = composed,
+                        isColorable = false,
+                    )
+                }
+            }
+        }
         // The capsule draws the plain app icon, exactly like the status bar and the notification
         // centre do — the contact photo of an avatar package is composed by the host in the header,
         // never here. Yielding to the host avatar therefore only left the stock icon behind, which is
@@ -397,6 +455,15 @@ internal class LockScreenCapsuleHooks(
     }
 
     /**
+     * Content size for the composed avatar. ColorOS lays the capsule row icon out at roughly 48dp,
+     * so composing at that size keeps the bitmap close to 1:1 with the view and the photo sharp.
+     */
+    private fun capsuleAvatarSizePx(context: Context): Int =
+        (CAPSULE_ICON_SIZE_DP * context.resources.displayMetrics.density)
+            .toInt()
+            .coerceAtLeast(1)
+
+    /**
      * Package-name variant used by the "hide notification content" form, where ColorOS never builds a
      * per-notification bundle and therefore hands over neither an [Icon] nor a [StatusBarNotification].
      */
@@ -465,5 +532,10 @@ internal class LockScreenCapsuleHooks(
             .invoke(null) as? Context
     } catch (_: Throwable) {
         null
+    }
+
+    private companion object {
+        /** Laid-out size of the capsule row icon; the composed avatar is drawn at this size. */
+        const val CAPSULE_ICON_SIZE_DP = 48f
     }
 }

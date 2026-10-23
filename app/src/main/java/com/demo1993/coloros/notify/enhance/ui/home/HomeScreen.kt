@@ -192,7 +192,7 @@ fun HomeScreen(
             repositoryInvalid = false
         },
         onDismiss = { showSourceDialog = false },
-        onOpenCloud = { openUrl(ModuleInfo.ANIP_PROJECT_URL) },
+        onOpenCloud = { context.openUrl(ModuleInfo.ANIP_PROJECT_URL) },
         onConfirm = ::confirmSourceAndSync,
     )
 }

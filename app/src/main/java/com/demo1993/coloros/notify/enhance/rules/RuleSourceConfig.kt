@@ -125,7 +125,7 @@ private const val KEY_REPOSITORY = "rule_source_repository"
 fun readRuleSourceConfig(context: Context): RuleSourceConfig {
     val prefs = context.getSharedPreferences(SOURCE_PREFS, Context.MODE_PRIVATE)
     val repository = prefs.getString(KEY_REPOSITORY, null)
-        ?.takeIf { RuleSourceConfig(it).isValidRepository }
+        ?.takeIf { RuleSourceConfig(repository = it).isValidRepository }
         ?: ModuleInfo.ANIP_REPO
     return RuleSourceConfig(
         type = RuleSourceType.fromStorage(prefs.getString(KEY_SOURCE_TYPE, null)),

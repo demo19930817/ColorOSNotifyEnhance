@@ -143,6 +143,7 @@ internal class NotificationIconResolver(
             ?.let { icon -> StatusBarIconRenderPlan(icon = icon, isColorable = true) }
     }
 
+    @Suppress("UNUSED_PARAMETER") // Kept in the signature: every panel caller already has the icon.
     fun resolvePanelIconPlan(
         context: Context,
         sbn: StatusBarNotification,
@@ -152,7 +153,24 @@ internal class NotificationIconResolver(
         // packages. Leave those rows, banner cards and lock-screen capsules untouched — but only
         // when this notification has an avatar for the host to compose (see the resolver method).
         if (shouldYieldToHostAvatar(context, sbn.packageName, sbn)) return@resolveOrFallback null
-        resolvePanelIconPlanBody(context, sbn, originalSmallIcon)
+        if (
+            !NotificationIconPolicy.shouldProcessPanel(
+                config = policyConfig,
+                isMediaNotification = sbn.isMediaNotification(),
+                isOplusPush = sbn.isOplusPush(),
+            )
+        ) return@resolveOrFallback null
+        // This surface has exactly one source: [IconSurface.Panel] → [PolicyIconSource.DesktopTheme].
+        // There is deliberately no rule-mask and no raw-small-icon fallback here. Both are
+        // monochrome artworks meant for the status bar, where SystemUI tints them and draws its own
+        // background; painted into a row they arrive as-is — no squircle, no tint — which is the
+        // bare white silhouette reported as "pdd / 天气又变成规则图标了". The fallbacks also race the
+        // theme engine's cold start: a miss at bind time pinned the mask onto the row until the next
+        // post rebound it, which is why the same row fixed itself the moment a new notification came
+        // in. Answering null instead keeps ColorOS' own artwork and hands the row to the caller's
+        // guard, which retries until the theme icon resolves.
+        resolveThemeIconReplacement(context, sbn, IconSurface.Panel)
+            ?.toPanelIconRenderPlanOrNull(context, "panel")
     }
 
     /**
@@ -195,53 +213,6 @@ internal class NotificationIconResolver(
         ) return@resolveOrFallback null
         resolveThemeIconReplacement(context, sbn, IconSurface.Panel)
             ?.toPanelIconRenderPlanOrNull(context, "panel")
-    }
-
-    private fun resolvePanelIconPlanBody(
-        context: Context,
-        sbn: StatusBarNotification,
-        originalSmallIcon: Icon?,
-        allowRawSmallIconFallback: Boolean = true,
-    ): PanelIconRenderPlan? {
-        if (
-            !NotificationIconPolicy.shouldProcessPanel(
-                config = policyConfig,
-                isMediaNotification = sbn.isMediaNotification(),
-                isOplusPush = sbn.isOplusPush(),
-            )
-        ) return null
-        resolveThemeIconReplacement(context, sbn, IconSurface.Panel)
-            ?.toPanelIconRenderPlanOrNull(context, "panel")
-            ?.let { return it }
-
-        val forcedReplacement = resolveRuleIconReplacement(
-            sbn,
-            IconSurface.Panel,
-            OriginalIconCompatibility.Unchecked,
-        )?.takeUnless { it is IconReplacement.Placeholder }
-        forcedReplacement?.toPanelIconRenderPlanOrNull(context, "panel")?.let { return it }
-
-        val originalDrawable = originalSmallIcon?.loadDrawable(context)?.mutate() ?: return null
-        val originalCompatibility = NotificationIconMaskClassifier.classify(originalDrawable)
-        if (forcedReplacement == null) {
-            resolveRuleIconReplacement(
-                sbn,
-                IconSurface.Panel,
-                originalCompatibility.toPolicyCompatibility(),
-            )?.takeUnless { it is IconReplacement.Placeholder }
-                ?.toPanelIconRenderPlanOrNull(context, "panel")
-                ?.let { return it }
-        }
-
-        if (allowRawSmallIconFallback &&
-            originalCompatibility == NotificationIconMaskCompatibility.Compatible
-        ) {
-            return PanelIconRenderPlan(
-                drawable = originalDrawable,
-                tintColor = context.defaultPanelIconTint,
-            )
-        }
-        return null
     }
 
     private fun resolveThemeIconReplacement(

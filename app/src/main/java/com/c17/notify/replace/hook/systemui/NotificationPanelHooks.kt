@@ -1608,7 +1608,7 @@ internal class NotificationPanelHooks(
     private val headerPlaceholderGuards = java.util.WeakHashMap<ImageView, HeaderPlaceholderGuard>()
 
     /**
-     * Cold-start net for the header avatar slot.
+     * Cold-start net for the header icon slot.
      *
      * Since 5.4 a row without a large icon is replaced deterministically at bind time, so this
      * guard only runs when the bind itself could not produce a plan — the theme engine was still
@@ -1616,6 +1616,12 @@ internal class NotificationPanelHooks(
      * app-icon placeholder the host painted in the meantime, forcing redraws until the engine is
      * warm. A real photo (or the host's "photo + badge" composition, whose centre is the photo)
      * stops the guard for good, so a row that does get its avatar later is never painted over.
+     *
+     * The precondition is "no avatar to protect" rather than the exact `no-large-icon` verdict: the
+     * slot can also be tied up by a launcher-icon placeholder or a blank sheet from the host, and
+     * those are the same cold-start casualty. [HeaderPlaceholderGuard.isHostAppIconPlaceholder]
+     * still refuses anything that is not measurably empty artwork, so a late avatar is never
+     * covered.
      */
     private fun guardHeaderIconAgainstHostPlaceholder(
         icon: ImageView,
@@ -1624,9 +1630,7 @@ internal class NotificationPanelHooks(
         snapshot: RuntimeSnapshot,
     ) {
         val context = icon.context
-        if (HostAvatarPresence.evaluate(context, sbn).reason != HostAvatarPresence.REASON_NO_LARGE_ICON) {
-            return
-        }
+        if (HostAvatarPresence.evaluate(context, sbn).renderable) return
         // No themed lookup here on purpose: the engine is cold, that is why this path is running
         // at all. The guard resolves the themed icon lazily on each draw instead.
         headerPlaceholderGuards
@@ -1663,10 +1667,11 @@ internal class NotificationPanelHooks(
         /**
          * The guard only acts inside OnPreDraw, which fires when something invalidates the view.
          * A bound row that nobody redraws would never trigger it, so schedule a short ladder of
-         * draw passes — the same idea as the group-summary refill ladder.
+         * draw passes — the same idea as the group-summary refill ladder. Six passes reach roughly
+         * sixteen seconds, which outlasts the theme engine's own warm-up after a SystemUI restart.
          */
         private fun nudge() {
-            if (stopped || nudges >= 4) return
+            if (stopped || nudges >= 6) return
             val delay = 256L shl nudges
             nudges++
             icon.postDelayed({

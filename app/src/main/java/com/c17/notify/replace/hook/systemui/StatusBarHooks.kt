@@ -115,16 +115,16 @@ internal class StatusBarHooks(
                     ?: return@install statusBarIcon
                 members.statusBarPreloadedIcon.set(replacement, null)
                 members.statusBarIcon.set(replacement, plan.icon)
-                // Keep Notification.smallIcon in sync so ColorOS group/AOD paths that read it
-                // directly (GroupIconManager, etc.) see the same replacement. Notifications the
-                // host composes an avatar for are excluded: those pipelines build the group-summary
-                // icon from the members' small icons, so writing the replacement there would hide
-                // the avatar even though the panel paths already yield.
-                val groupPathsNeedSync = snapshot.config.panelIconReplacementEnabled &&
-                    !snapshot.resolver.shouldYieldToHostAvatar(context, sbn.packageName, sbn)
-                if (groupPathsNeedSync) {
-                    members.notificationSmallIcon?.set(sbn.notification, plan.icon)
-                }
+                // `Notification#smallIcon` is deliberately left alone. The status-bar plan is a
+                // rule-library mask — a monochrome silhouette that only looks right because
+                // SystemUI tints it and paints its own background. Writing it back into the
+                // notification made every other reader of that field paint the mask as-is: rows
+                // whose theme lookup had not landed yet, and the collapsed group summary that
+                // GroupIconManager recomposes from the members' small icons. That is the "pdd /
+                // 天气又变成规则图标了" report, and it survives until a new post rebinds the row.
+                // ColorOS' own value (app's icon, fixed up by system_server) is the correct
+                // fallback for those readers; the panel paths get the theme icon from the
+                // resolver or from their own guards, never from this field.
                 iconClaims.claimDescriptor(replacement, sbn.key, plan.isColorable)
                 StatusBarIconReplacementCache.put(
                     notificationKey = sbn.key,

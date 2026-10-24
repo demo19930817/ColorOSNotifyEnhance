@@ -88,11 +88,19 @@ internal class ThemeIconProvider(
         }
 
         val bitmap = loadThemeBitmap(context, packageName, user, userId)
+        val now = SystemClock.elapsedRealtime()
         putCacheEntry(
             key,
             CacheEntry(
                 result = bitmap?.let(CacheResult::Hit) ?: CacheResult.Miss,
-                createdAt = SystemClock.elapsedRealtime(),
+                createdAt = now,
+                // A miss is almost always the theme engine still warming up, not a permanent
+                // "this app has no theme icon". Ten seconds of cached miss pinned every repaint
+                // inside that window to the host's fallback artwork, and the panel row reached it
+                // straight after the shade opened — the row then kept the wrong icon until the
+                // next post rebound it. Hits keep the long TTL; misses expire in a second, which
+                // is still slow enough that the guards' per-draw retries do not hammer the engine.
+                ttlMillis = if (bitmap != null) CACHE_TTL_MS else MISS_CACHE_TTL_MS,
             ),
         )
         bitmap
@@ -194,12 +202,31 @@ internal class ThemeIconProvider(
         userId: Int,
     ): Bitmap? {
         val packageManager = context.packageManager
-        val packageInfo = packageManager.resolvePackageInfo(context, packageName, user, userId) ?: return null
+        val packageInfo = packageManager.resolvePackageInfo(context, packageName, user, userId)
+        if (packageInfo == null) {
+            diagnostics.report(
+                level = DiagnosticLevel.Debug,
+                event = DiagnosticEvent.PackageIconResolved,
+                message = "主题图标解析：$packageName 读不到包信息，本次保留宿主图标",
+                attributes = mapOf("package" to packageName, "stage" to "package_info"),
+                occurrence = OccurrencePolicy.RateLimited("theme_icon:no_package:$packageName", 600_000L),
+            )
+            return null
+        }
         val drawable = loadThemeDrawable(context, packageInfo.itemInfo, packageInfo.applicationInfo)
             ?: packageInfo.applicationInfo.takeUnless { it === packageInfo.itemInfo }?.let {
                 loadThemeDrawable(context, it, packageInfo.applicationInfo)
             }
-            ?: return null
+        if (drawable == null) {
+            diagnostics.report(
+                level = DiagnosticLevel.Debug,
+                event = DiagnosticEvent.PackageIconResolved,
+                message = "主题图标解析：$packageName 主题图标接口返回空，本次保留宿主图标",
+                attributes = mapOf("package" to packageName, "stage" to "ux_icon"),
+                occurrence = OccurrencePolicy.RateLimited("theme_icon:no_drawable:$packageName", 600_000L),
+            )
+            return null
+        }
         return try {
             drawable.toIconBitmap(context)
         } catch (exception: Exception) {
@@ -572,7 +599,7 @@ internal class ThemeIconProvider(
     }
 
     private fun CacheEntry.isExpired(): Boolean =
-        SystemClock.elapsedRealtime() - createdAt > CACHE_TTL_MS
+        SystemClock.elapsedRealtime() - createdAt > ttlMillis
 
     private data class ResolvedPackageInfo(
         val itemInfo: PackageItemInfo,
@@ -597,6 +624,7 @@ internal class ThemeIconProvider(
     private data class CacheEntry(
         val result: CacheResult,
         val createdAt: Long,
+        val ttlMillis: Long = CACHE_TTL_MS,
     )
 
     private sealed class CacheResult {
@@ -609,6 +637,9 @@ internal class ThemeIconProvider(
         const val ICON_CONTENT_RATIO = 1f
         const val OPAQUE_ALPHA_THRESHOLD = 8
         const val CACHE_TTL_MS = 10_000L
+
+        /** Misses are retried almost at once: the engine warms up within a frame or two. */
+        const val MISS_CACHE_TTL_MS = 1_000L
         const val MAX_CACHE_SIZE_KIB = 4 * 1024
         const val MAX_THEME_RENDER_DIMENSION = 512
         /**
